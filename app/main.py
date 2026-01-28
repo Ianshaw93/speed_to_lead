@@ -5,9 +5,14 @@ import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from sqlalchemy import select
 
 from app.config import settings
+from app.database import async_session_factory
+from app.models import Conversation, Draft, DraftStatus, MessageDirection, MessageLog
 from app.schemas import HeyReachWebhookPayload, HealthResponse
+from app.services.deepseek import generate_reply_draft
+from app.services.slack import SlackBot
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -58,8 +63,10 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
 
     This function orchestrates:
     1. Upserting conversation record
-    2. Generating AI draft via DeepSeek
-    3. Sending draft to Telegram for approval
+    2. Logging the inbound message
+    3. Generating AI draft via DeepSeek
+    4. Sending draft to Slack for approval
+    5. Storing draft with pending status
 
     Args:
         payload: The webhook payload from HeyReach.
@@ -67,9 +74,84 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
     Returns:
         Dict with draft_id if successful.
     """
-    # TODO: Implement full processing pipeline
-    # For now, return a placeholder
-    return {"draft_id": str(uuid.uuid4())}
+    try:
+        async with async_session_factory() as session:
+            # 1. Upsert conversation record
+            result = await session.execute(
+                select(Conversation).where(
+                    Conversation.heyreach_lead_id == payload.conversation_id
+                )
+            )
+            conversation = result.scalar_one_or_none()
+
+            # Build conversation history from recent messages
+            history = [
+                {"role": "lead", "content": msg.message, "time": msg.creation_time}
+                for msg in payload.all_recent_messages
+            ]
+
+            if conversation:
+                # Update existing conversation
+                conversation.conversation_history = history
+                logger.info(f"Updated conversation {conversation.id}")
+            else:
+                # Create new conversation
+                conversation = Conversation(
+                    heyreach_lead_id=payload.conversation_id,
+                    linkedin_profile_url=f"linkedin://conversation/{payload.conversation_id}",
+                    lead_name=payload.lead_name,
+                    conversation_history=history,
+                )
+                session.add(conversation)
+                await session.flush()  # Get the ID
+                logger.info(f"Created conversation {conversation.id}")
+
+            # 2. Log the inbound message
+            message_log = MessageLog(
+                conversation_id=conversation.id,
+                direction=MessageDirection.INBOUND,
+                content=payload.latest_message,
+            )
+            session.add(message_log)
+
+            # 3. Generate AI draft via DeepSeek
+            logger.info(f"Generating AI draft for conversation {conversation.id}")
+            ai_draft = await generate_reply_draft(
+                lead_name=payload.lead_name,
+                lead_message=payload.latest_message,
+                conversation_history=history,
+            )
+            logger.info(f"Generated draft: {ai_draft[:100]}...")
+
+            # 4. Send draft to Slack for approval
+            slack_bot = SlackBot()
+            slack_ts = await slack_bot.send_draft_notification(
+                draft_id=str(uuid.uuid4()),  # Temporary, will update after creating draft
+                lead_name=payload.lead_name,
+                lead_title=None,  # Not in payload
+                lead_company=payload.lead_company,
+                linkedin_url=f"https://www.linkedin.com/messaging/thread/{payload.conversation_id}",
+                lead_message=payload.latest_message,
+                ai_draft=ai_draft,
+            )
+            logger.info(f"Sent Slack notification, ts: {slack_ts}")
+
+            # 5. Store draft with pending status
+            draft = Draft(
+                conversation_id=conversation.id,
+                status=DraftStatus.PENDING,
+                ai_draft=ai_draft,
+                slack_message_ts=slack_ts,
+            )
+            session.add(draft)
+            await session.commit()
+
+            logger.info(f"Created draft {draft.id} for conversation {conversation.id}")
+            return {"draft_id": str(draft.id)}
+
+    except Exception as e:
+        logger.error(f"Error processing message: {e}", exc_info=True)
+        return {"error": str(e)}
 
 
 @app.get("/webhook/heyreach")
