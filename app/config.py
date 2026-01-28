@@ -16,21 +16,21 @@ class Settings(BaseSettings):
     )
 
     # HeyReach
-    heyreach_api_key: str
+    heyreach_api_key: str = ""
 
     # DeepSeek
-    deepseek_api_key: str
+    deepseek_api_key: str = ""
     deepseek_model: str = "deepseek-chat"
 
     # Telegram
-    telegram_bot_token: str
-    telegram_chat_id: str
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
 
     # Database
-    database_url: str
+    database_url: str = "sqlite+aiosqlite:///./speed_to_lead.db"
 
     # App
-    secret_key: str
+    secret_key: str = "change-me-in-production"
     environment: str = "development"
 
     @property

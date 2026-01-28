@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(compgen -c)",
+      "Bash(pip install:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(railway logs:*)",
+      "Bash(railway whoami:*)",
+      "Bash(railway version:*)",
+      "Bash(railway environment:*)",
+      "Bash(railway up:*)",
+      "Bash(claude mcp:*)",
+      "Bash(railway --version:*)",
+      "Bash(railway help:*)",
+      "Bash(git push:*)",
+      "WebFetch(domain:docs.railway.com)",
+      "Bash(script -q -c \"railway logs --tail 50\" /dev/null)",
+      "Bash(tee:*)",
+      "Bash(cmd //c \"railway logs --tail 50\":*)",
+      "Bash(railway:*)",
+      "Bash(where railway:*)",
+      "Bash(cmd //c \"railway logs -d --tail 50\")"
+    ]
+  }
+}
