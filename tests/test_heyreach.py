@@ -29,7 +29,8 @@ class TestHeyReachClient:
             mock_post.return_value = mock_response
 
             result = await client.send_message(
-                lead_id="lead_123",
+                conversation_id="conv_123",
+                linkedin_account_id="li_account_456",
                 message="Hello, thanks for connecting!",
             )
 
@@ -42,7 +43,7 @@ class TestHeyReachClient:
         """Should raise HeyReachError on API failure."""
         mock_response = Response(
             400,
-            json={"error": "Invalid lead ID"},
+            json={"error": "Invalid conversation ID"},
         )
 
         with patch.object(client._client, "post", new_callable=AsyncMock) as mock_post:
@@ -50,7 +51,8 @@ class TestHeyReachClient:
 
             with pytest.raises(HeyReachError) as exc_info:
                 await client.send_message(
-                    lead_id="invalid_lead",
+                    conversation_id="invalid_conv",
+                    linkedin_account_id="li_account_456",
                     message="Hello!",
                 )
 
@@ -64,32 +66,12 @@ class TestHeyReachClient:
 
             with pytest.raises(HeyReachError) as exc_info:
                 await client.send_message(
-                    lead_id="lead_123",
+                    conversation_id="conv_123",
+                    linkedin_account_id="li_account_456",
                     message="Hello!",
                 )
 
             assert "Connection refused" in str(exc_info.value)
-
-    @pytest.mark.asyncio
-    async def test_get_lead_info_success(self, client):
-        """Should retrieve lead information."""
-        mock_response = Response(
-            200,
-            json={
-                "id": "lead_123",
-                "name": "John Doe",
-                "title": "CEO",
-                "company": "Acme Corp",
-            },
-        )
-
-        with patch.object(client._client, "get", new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = mock_response
-
-            result = await client.get_lead_info("lead_123")
-
-            assert result["name"] == "John Doe"
-            assert result["title"] == "CEO"
 
     def test_client_initialization(self):
         """Should initialize with correct API key."""
@@ -104,12 +86,20 @@ class TestHeyReachWebhook:
     async def test_webhook_receives_message(self, test_client: AsyncClient):
         """Should receive and process a webhook payload."""
         payload = {
-            "leadId": "lead_123",
-            "linkedinUrl": "https://linkedin.com/in/johndoe",
-            "leadName": "John Doe",
-            "messageContent": "I'm interested in your product!",
-            "leadTitle": "VP Engineering",
-            "leadCompany": "Tech Corp",
+            "lead": {
+                "full_name": "John Doe",
+                "company_name": "Tech Corp",
+                "company_url": "https://techcorp.com",
+                "email_address": "john@techcorp.com",
+            },
+            "recent_messages": [
+                {
+                    "creation_time": "2024-01-27T10:00:00Z",
+                    "message": "I'm interested in your product!",
+                }
+            ],
+            "conversation_id": "conv_123",
+            "sender": {"id": "li_account_456"},
         }
 
         # Mock the services to avoid actual API calls
@@ -121,13 +111,15 @@ class TestHeyReachWebhook:
             assert response.status_code == 200
             data = response.json()
             assert data["status"] == "received"
+            assert data["conversation_id"] == "conv_123"
+            assert data["lead_name"] == "John Doe"
 
     @pytest.mark.asyncio
     async def test_webhook_invalid_payload(self, test_client: AsyncClient):
         """Should return 422 for invalid payload."""
         payload = {
-            "leadId": "lead_123",
-            # Missing required fields
+            "lead": {"full_name": "John"},
+            # Missing required fields: recent_messages, conversation_id, sender
         }
 
         response = await test_client.post("/webhook/heyreach", json=payload)

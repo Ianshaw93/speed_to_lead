@@ -66,7 +66,7 @@ async def heyreach_webhook(
 
     This endpoint:
     1. Validates the incoming payload
-    2. Triggers background processing (AI draft, Telegram notification)
+    2. Triggers background processing (AI draft, Slack notification)
     3. Returns immediately to acknowledge receipt
 
     Args:
@@ -81,5 +81,6 @@ async def heyreach_webhook(
 
     return {
         "status": "received",
-        "lead_id": payload.lead_id,
+        "conversation_id": payload.conversation_id,
+        "lead_name": payload.lead_name,
     }

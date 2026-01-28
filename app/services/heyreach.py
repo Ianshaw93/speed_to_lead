@@ -16,7 +16,7 @@ class HeyReachError(Exception):
 class HeyReachClient:
     """Client for interacting with the HeyReach API."""
 
-    BASE_URL = "https://api.heyreach.io/api/v1"
+    BASE_URL = "https://api.heyreach.io/api/public"
 
     def __init__(self, api_key: str | None = None):
         """Initialize the HeyReach client.
@@ -28,65 +28,55 @@ class HeyReachClient:
         self._client = httpx.AsyncClient(
             base_url=self.BASE_URL,
             headers={
-                "Authorization": f"Bearer {self._api_key}",
+                "X-API-KEY": self._api_key,
                 "Content-Type": "application/json",
+                "Accept": "text/plain",
             },
             timeout=30.0,
         )
 
-    async def send_message(self, lead_id: str, message: str) -> dict[str, Any]:
+    async def send_message(
+        self,
+        conversation_id: str,
+        linkedin_account_id: str,
+        message: str,
+    ) -> dict[str, Any]:
         """Send a message to a lead via HeyReach.
 
         Args:
-            lead_id: The HeyReach lead ID.
+            conversation_id: The HeyReach conversation ID.
+            linkedin_account_id: The LinkedIn account ID (sender.id from webhook).
             message: The message content to send.
 
         Returns:
-            API response with success status and message ID.
+            API response with success status.
 
         Raises:
             HeyReachError: If the API call fails.
         """
         try:
             response = await self._client.post(
-                "/messages/send",
+                "/inbox/SendMessage",
                 json={
-                    "leadId": lead_id,
                     "message": message,
+                    "subject": message,  # Often same as message for LinkedIn
+                    "conversationId": conversation_id,
+                    "linkedInAccountId": linkedin_account_id,
                 },
             )
 
             if response.status_code != 200:
-                error_detail = response.json().get("error", "Unknown error")
+                try:
+                    error_detail = response.json().get("error", response.text)
+                except Exception:
+                    error_detail = response.text
                 raise HeyReachError(f"Failed to send message: {error_detail}")
 
-            return response.json()
-
-        except HeyReachError:
-            raise
-        except Exception as e:
-            raise HeyReachError(f"HeyReach API error: {e}") from e
-
-    async def get_lead_info(self, lead_id: str) -> dict[str, Any]:
-        """Get information about a lead.
-
-        Args:
-            lead_id: The HeyReach lead ID.
-
-        Returns:
-            Lead information including name, title, company.
-
-        Raises:
-            HeyReachError: If the API call fails.
-        """
-        try:
-            response = await self._client.get(f"/leads/{lead_id}")
-
-            if response.status_code != 200:
-                error_detail = response.json().get("error", "Unknown error")
-                raise HeyReachError(f"Failed to get lead info: {error_detail}")
-
-            return response.json()
+            # Response may be plain text or JSON
+            try:
+                return response.json()
+            except Exception:
+                return {"success": True, "response": response.text}
 
         except HeyReachError:
             raise

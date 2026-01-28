@@ -94,24 +94,66 @@ class MessageLogResponse(MessageLogBase):
 
 
 # HeyReach webhook schemas
+class HeyReachLead(BaseModel):
+    """Lead information from HeyReach webhook."""
+
+    full_name: str
+    company_name: str | None = None
+    company_url: str | None = None
+    email_address: str | None = None
+
+
+class HeyReachMessage(BaseModel):
+    """A message in the conversation history."""
+
+    creation_time: str
+    message: str
+
+
+class HeyReachSender(BaseModel):
+    """Sender information (LinkedIn account)."""
+
+    id: str
+
+
 class HeyReachWebhookPayload(BaseModel):
     """Schema for incoming HeyReach webhook payload."""
 
-    lead_id: str = Field(..., alias="leadId")
-    linkedin_url: str = Field(..., alias="linkedinUrl")
-    lead_name: str = Field(..., alias="leadName")
-    message_content: str = Field(..., alias="messageContent")
-    lead_title: str | None = Field(None, alias="leadTitle")
-    lead_company: str | None = Field(None, alias="leadCompany")
+    lead: HeyReachLead
+    recent_messages: list[HeyReachMessage]
+    conversation_id: str
+    sender: HeyReachSender
 
-    model_config = ConfigDict(populate_by_name=True)
+    @property
+    def lead_name(self) -> str:
+        """Get the lead's full name."""
+        return self.lead.full_name
+
+    @property
+    def lead_company(self) -> str | None:
+        """Get the lead's company name."""
+        return self.lead.company_name
+
+    @property
+    def linkedin_account_id(self) -> str:
+        """Get the LinkedIn account ID for sending replies."""
+        return self.sender.id
+
+    @property
+    def latest_message(self) -> str:
+        """Get the most recent message content."""
+        if self.recent_messages:
+            return self.recent_messages[-1].message
+        return ""
 
 
 class HeyReachSendMessageRequest(BaseModel):
     """Schema for sending a message via HeyReach API."""
 
-    lead_id: str
     message: str
+    conversation_id: str
+    linkedin_account_id: str
+    subject: str | None = None  # Optional, often same as message
 
 
 class HeyReachSendMessageResponse(BaseModel):
