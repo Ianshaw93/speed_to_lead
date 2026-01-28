@@ -4,9 +4,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.config import settings
 
-# Create async engine
+# Create async engine using the async-compatible URL
 engine = create_async_engine(
-    settings.database_url,
+    settings.async_database_url,
     echo=settings.environment == "development",
 )
 

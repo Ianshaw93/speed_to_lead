@@ -43,6 +43,15 @@ class Settings(BaseSettings):
         """Get the DeepSeek API base URL."""
         return "https://api.deepseek.com"
 
+    @property
+    def async_database_url(self) -> str:
+        """Get database URL for async driver (asyncpg)."""
+        url = self.database_url
+        # Convert postgresql:// to postgresql+asyncpg://
+        if url.startswith("postgresql://"):
+            url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return url
+
 
 @lru_cache
 def get_settings() -> Settings:

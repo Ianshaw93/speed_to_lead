@@ -30,3 +30,24 @@ When implementing new features or fixing bugs, follow this TDD workflow:
 - Never consider a feature complete until tests pass
 - Tests are documentation - write them to be readable
 - When fixing bugs, write a test that reproduces the bug first
+
+## Railway Deployment
+
+This project is deployed on Railway. The user has linked the Railway project to this directory.
+
+### Using Railway CLI
+
+When debugging production issues or checking deployment status, use Railway CLI commands:
+
+- `railway logs` - View recent deployment logs
+- `railway logs --follow` - Stream logs in real-time
+- `railway status` - Check deployment status
+- `railway variables` - List environment variables
+- `railway run <command>` - Run a command with Railway environment variables
+
+### When to Use Railway CLI
+
+- When debugging production errors or unexpected behavior
+- When verifying deployments completed successfully
+- When checking environment variable configuration
+- When investigating webhook or API issues in production
