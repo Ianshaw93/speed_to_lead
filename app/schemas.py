@@ -97,101 +97,111 @@ class MessageLogResponse(MessageLogBase):
 class HeyReachLead(BaseModel):
     """Lead information from HeyReach webhook."""
 
+    model_config = ConfigDict(extra="ignore")
+
+    id: str | None = None
     full_name: str
+    first_name: str | None = None
+    last_name: str | None = None
     company_name: str | None = None
     company_url: str | None = None
     email_address: str | None = None
+    profile_url: str | None = None
+    position: str | None = None
+    location: str | None = None
 
 
 class HeyReachMessage(BaseModel):
     """A message in the conversation history."""
 
+    model_config = ConfigDict(extra="ignore")
+
     creation_time: str
     message: str
+    is_reply: bool | None = None
+    message_type: str | None = None
 
 
 class HeyReachSender(BaseModel):
     """Sender information (LinkedIn account)."""
 
-    id: str
+    model_config = ConfigDict(extra="ignore")
+
+    id: int | str  # Can be int or str
+    first_name: str | None = None
+    last_name: str | None = None
+    full_name: str | None = None
+    email_address: str | None = None
+    profile_url: str | None = None
 
 
-class HeyReachWebhookBody(BaseModel):
-    """Inner body of HeyReach webhook payload."""
+class HeyReachCampaign(BaseModel):
+    """Campaign information."""
 
+    model_config = ConfigDict(extra="ignore")
+
+    id: int | None = None
+    name: str | None = None
+    status: str | None = None
+
+
+class HeyReachWebhookPayload(BaseModel):
+    """Schema for incoming HeyReach webhook payload."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    # Core fields
     lead: HeyReachLead
     recent_messages: list[HeyReachMessage]
     conversation_id: str
     sender: HeyReachSender
 
-
-class HeyReachWebhookPayload(BaseModel):
-    """Schema for incoming HeyReach webhook payload.
-
-    Accepts both formats:
-    - With body wrapper: { "body": { "lead": {...}, ... } }
-    - Without body wrapper: { "lead": {...}, ... }
-    """
-
-    # Support both wrapped and unwrapped formats
-    body: HeyReachWebhookBody | None = None
-    # Direct fields (when not wrapped)
-    lead: HeyReachLead | None = None
-    recent_messages: list[HeyReachMessage] | None = None
-    raw_conversation_id: str | None = Field(default=None, alias="conversation_id")
-    sender: HeyReachSender | None = None
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    def model_post_init(self, __context) -> None:
-        """Validate that we have data in one format or the other."""
-        if self.body is None and self.lead is None:
-            raise ValueError("Payload must have either 'body' wrapper or direct fields")
-
-    def _get_body(self) -> HeyReachWebhookBody:
-        """Get the body data regardless of format."""
-        if self.body:
-            return self.body
-        # Construct from direct fields
-        return HeyReachWebhookBody(
-            lead=self.lead,
-            recent_messages=self.recent_messages or [],
-            conversation_id=self.raw_conversation_id or "",
-            sender=self.sender or HeyReachSender(id=""),
-        )
+    # Optional fields
+    campaign: HeyReachCampaign | None = None
+    is_inmail: bool | None = None
+    timestamp: str | None = None
+    event_type: str | None = None
+    correlation_id: str | None = None
 
     @property
     def lead_name(self) -> str:
         """Get the lead's full name."""
-        return self._get_body().lead.full_name
+        return self.lead.full_name
 
     @property
     def lead_company(self) -> str | None:
         """Get the lead's company name."""
-        return self._get_body().lead.company_name
+        return self.lead.company_name
+
+    @property
+    def lead_title(self) -> str | None:
+        """Get the lead's position/title."""
+        return self.lead.position
+
+    @property
+    def linkedin_profile_url(self) -> str | None:
+        """Get the lead's LinkedIn profile URL."""
+        return self.lead.profile_url
 
     @property
     def linkedin_account_id(self) -> str:
         """Get the LinkedIn account ID for sending replies."""
-        return self._get_body().sender.id
-
-    @property
-    def conversation_id(self) -> str:
-        """Get the conversation ID."""
-        return self._get_body().conversation_id
+        return str(self.sender.id)
 
     @property
     def latest_message(self) -> str:
         """Get the most recent message content."""
-        msgs = self._get_body().recent_messages
-        if msgs:
-            return msgs[-1].message
+        if self.recent_messages:
+            # Find the most recent non-empty message
+            for msg in reversed(self.recent_messages):
+                if msg.message:
+                    return msg.message
         return ""
 
     @property
     def all_recent_messages(self) -> list[HeyReachMessage]:
         """Get all recent messages."""
-        return self._get_body().recent_messages
+        return self.recent_messages
 
 
 class HeyReachSendMessageRequest(BaseModel):

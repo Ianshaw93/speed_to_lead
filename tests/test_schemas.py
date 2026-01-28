@@ -119,77 +119,92 @@ class TestMessageLogSchemas:
 class TestHeyReachWebhookPayload:
     """Tests for HeyReach webhook payload schema."""
 
-    def test_webhook_payload_with_body_wrapper(self):
-        """Should parse valid webhook payload with body wrapper."""
+    def test_webhook_payload_valid(self):
+        """Should parse valid webhook payload."""
         data = HeyReachWebhookPayload(
-            body={
-                "lead": {"full_name": "John Doe"},
-                "recent_messages": [
-                    {"creation_time": "2024-01-27T10:00:00Z", "message": "I'm interested!"}
-                ],
-                "conversation_id": "conv_123",
-                "sender": {"id": "li_account_456"},
-            }
+            lead={"full_name": "John Doe"},
+            recent_messages=[
+                {"creation_time": "2024-01-27T10:00:00Z", "message": "I'm interested!"}
+            ],
+            conversation_id="conv_123",
+            sender={"id": 456},
         )
         assert data.lead_name == "John Doe"
         assert data.conversation_id == "conv_123"
-        assert data.linkedin_account_id == "li_account_456"
+        assert data.linkedin_account_id == "456"
         assert data.latest_message == "I'm interested!"
 
-    def test_webhook_payload_without_body_wrapper(self):
-        """Should parse valid webhook payload without body wrapper."""
+    def test_webhook_payload_with_string_sender_id(self):
+        """Should accept sender.id as string."""
         data = HeyReachWebhookPayload(
             lead={"full_name": "Jane Doe"},
             recent_messages=[
-                {"creation_time": "2024-01-27T10:00:00Z", "message": "Hello direct!"}
+                {"creation_time": "2024-01-27T10:00:00Z", "message": "Hello!"}
             ],
             conversation_id="conv_direct",
             sender={"id": "li_direct_456"},
         )
-        assert data.lead_name == "Jane Doe"
-        assert data.conversation_id == "conv_direct"
         assert data.linkedin_account_id == "li_direct_456"
-        assert data.latest_message == "Hello direct!"
 
     def test_webhook_payload_with_optional_fields(self):
         """Should parse webhook with optional company/email."""
         data = HeyReachWebhookPayload(
-            body={
-                "lead": {
-                    "full_name": "John Doe",
-                    "company_name": "Acme Corp",
-                    "company_url": "https://acme.com",
-                    "email_address": "john@acme.com",
-                },
-                "recent_messages": [
-                    {"creation_time": "2024-01-27T10:00:00Z", "message": "Hello!"}
-                ],
-                "conversation_id": "conv_123",
-                "sender": {"id": "li_account_456"},
-            }
+            lead={
+                "full_name": "John Doe",
+                "company_name": "Acme Corp",
+                "company_url": "https://acme.com",
+                "email_address": "john@acme.com",
+                "position": "CEO",
+                "profile_url": "https://linkedin.com/in/johndoe",
+            },
+            recent_messages=[
+                {"creation_time": "2024-01-27T10:00:00Z", "message": "Hello!"}
+            ],
+            conversation_id="conv_123",
+            sender={"id": 456, "full_name": "Sender Name"},
+            campaign={"id": 123, "name": "Test Campaign"},
+            event_type="every_message_reply_received",
         )
         assert data.lead_company == "Acme Corp"
-        assert data.body.lead.email_address == "john@acme.com"
+        assert data.lead_title == "CEO"
+        assert data.linkedin_profile_url == "https://linkedin.com/in/johndoe"
+        assert data.lead.email_address == "john@acme.com"
 
     def test_webhook_payload_missing_required(self):
-        """Should reject payload missing both body and direct fields."""
+        """Should reject payload missing required fields."""
         with pytest.raises(ValidationError):
-            HeyReachWebhookPayload()  # No body or direct fields
+            HeyReachWebhookPayload(
+                lead={"full_name": "John"},
+                # Missing: recent_messages, conversation_id, sender
+            )
 
     def test_webhook_payload_multiple_messages(self):
-        """Should return the latest message from conversation history."""
+        """Should return the latest non-empty message from conversation history."""
         data = HeyReachWebhookPayload(
-            body={
-                "lead": {"full_name": "John Doe"},
-                "recent_messages": [
-                    {"creation_time": "2024-01-27T09:00:00Z", "message": "First message"},
-                    {"creation_time": "2024-01-27T10:00:00Z", "message": "Latest reply"},
-                ],
-                "conversation_id": "conv_123",
-                "sender": {"id": "li_account_456"},
-            }
+            lead={"full_name": "John Doe"},
+            recent_messages=[
+                {"creation_time": "2024-01-27T09:00:00Z", "message": "First message"},
+                {"creation_time": "2024-01-27T10:00:00Z", "message": "Latest reply"},
+                {"creation_time": "2024-01-27T10:01:00Z", "message": "", "message_type": "Attachment"},
+            ],
+            conversation_id="conv_123",
+            sender={"id": 456},
         )
+        # Should skip the empty attachment message
         assert data.latest_message == "Latest reply"
+
+    def test_webhook_payload_ignores_extra_fields(self):
+        """Should ignore extra fields not in schema."""
+        data = HeyReachWebhookPayload(
+            lead={"full_name": "John Doe", "unknown_field": "value"},
+            recent_messages=[
+                {"creation_time": "2024-01-27T10:00:00Z", "message": "Hi"}
+            ],
+            conversation_id="conv_123",
+            sender={"id": 456},
+            unknown_root_field="should be ignored",
+        )
+        assert data.lead_name == "John Doe"
 
 
 class TestSlackActionPayload:

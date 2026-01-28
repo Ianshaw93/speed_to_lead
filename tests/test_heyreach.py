@@ -83,25 +83,23 @@ class TestHeyReachWebhook:
     """Tests for the HeyReach webhook endpoint."""
 
     @pytest.mark.asyncio
-    async def test_webhook_receives_message_with_body_wrapper(self, test_client: AsyncClient):
-        """Should receive and process a webhook payload with body wrapper."""
+    async def test_webhook_receives_message(self, test_client: AsyncClient):
+        """Should receive and process a webhook payload."""
         payload = {
-            "body": {
-                "lead": {
-                    "full_name": "John Doe",
-                    "company_name": "Tech Corp",
-                    "company_url": "https://techcorp.com",
-                    "email_address": "john@techcorp.com",
-                },
-                "recent_messages": [
-                    {
-                        "creation_time": "2024-01-27T10:00:00Z",
-                        "message": "I'm interested in your product!",
-                    }
-                ],
-                "conversation_id": "conv_123",
-                "sender": {"id": "li_account_456"},
-            }
+            "lead": {
+                "full_name": "John Doe",
+                "company_name": "Tech Corp",
+                "company_url": "https://techcorp.com",
+                "email_address": "john@techcorp.com",
+            },
+            "recent_messages": [
+                {
+                    "creation_time": "2024-01-27T10:00:00Z",
+                    "message": "I'm interested in your product!",
+                }
+            ],
+            "conversation_id": "conv_123",
+            "sender": {"id": 456},
         }
 
         # Mock the services to avoid actual API calls
@@ -117,24 +115,27 @@ class TestHeyReachWebhook:
             assert data["lead_name"] == "John Doe"
 
     @pytest.mark.asyncio
-    async def test_webhook_receives_message_without_body_wrapper(self, test_client: AsyncClient):
-        """Should receive and process a webhook payload without body wrapper."""
+    async def test_webhook_receives_full_heyreach_payload(self, test_client: AsyncClient):
+        """Should handle full HeyReach payload with all fields."""
         payload = {
-            "lead": {
-                "full_name": "Jane Direct",
-                "company_name": "Direct Corp",
-            },
+            "is_inmail": False,
             "recent_messages": [
-                {
-                    "creation_time": "2024-01-27T10:00:00Z",
-                    "message": "Direct message!",
-                }
+                {"creation_time": "2026-01-28T16:28:01Z", "message": "Hi there", "is_reply": True},
             ],
-            "conversation_id": "conv_direct",
-            "sender": {"id": "li_direct_456"},
+            "conversation_id": "2-ODYwNmVkNDI=",
+            "campaign": {"name": "Test Campaign", "id": 123},
+            "sender": {"id": 123, "first_name": "John", "full_name": "John Doe"},
+            "lead": {
+                "id": "TestId",
+                "profile_url": "https://www.linkedin.com/in/johndoe",
+                "full_name": "John Doe",
+                "company_name": "Test Company",
+                "position": "CEO",
+            },
+            "timestamp": "2026-01-28T16:28:01Z",
+            "event_type": "every_message_reply_received",
         }
 
-        # Mock the services to avoid actual API calls
         with patch("app.main.process_incoming_message", new_callable=AsyncMock) as mock_process:
             mock_process.return_value = {"draft_id": str(uuid.uuid4())}
 
@@ -143,8 +144,7 @@ class TestHeyReachWebhook:
             assert response.status_code == 200
             data = response.json()
             assert data["status"] == "received"
-            assert data["conversation_id"] == "conv_direct"
-            assert data["lead_name"] == "Jane Direct"
+            assert data["lead_name"] == "John Doe"
 
     @pytest.mark.asyncio
     async def test_webhook_empty_body(self, test_client: AsyncClient):
