@@ -119,7 +119,7 @@ class TestMessageLogSchemas:
 class TestHeyReachWebhookPayload:
     """Tests for HeyReach webhook payload schema."""
 
-    def test_webhook_payload_valid(self):
+    def test_webhook_payload_with_body_wrapper(self):
         """Should parse valid webhook payload with body wrapper."""
         data = HeyReachWebhookPayload(
             body={
@@ -135,6 +135,21 @@ class TestHeyReachWebhookPayload:
         assert data.conversation_id == "conv_123"
         assert data.linkedin_account_id == "li_account_456"
         assert data.latest_message == "I'm interested!"
+
+    def test_webhook_payload_without_body_wrapper(self):
+        """Should parse valid webhook payload without body wrapper."""
+        data = HeyReachWebhookPayload(
+            lead={"full_name": "Jane Doe"},
+            recent_messages=[
+                {"creation_time": "2024-01-27T10:00:00Z", "message": "Hello direct!"}
+            ],
+            conversation_id="conv_direct",
+            sender={"id": "li_direct_456"},
+        )
+        assert data.lead_name == "Jane Doe"
+        assert data.conversation_id == "conv_direct"
+        assert data.linkedin_account_id == "li_direct_456"
+        assert data.latest_message == "Hello direct!"
 
     def test_webhook_payload_with_optional_fields(self):
         """Should parse webhook with optional company/email."""
@@ -157,14 +172,9 @@ class TestHeyReachWebhookPayload:
         assert data.body.lead.email_address == "john@acme.com"
 
     def test_webhook_payload_missing_required(self):
-        """Should reject payload missing required fields."""
+        """Should reject payload missing both body and direct fields."""
         with pytest.raises(ValidationError):
-            HeyReachWebhookPayload(
-                body={
-                    "lead": {"full_name": "John"},
-                    # Missing: recent_messages, conversation_id, sender
-                }
-            )
+            HeyReachWebhookPayload()  # No body or direct fields
 
     def test_webhook_payload_multiple_messages(self):
         """Should return the latest message from conversation history."""

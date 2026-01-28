@@ -83,8 +83,8 @@ class TestHeyReachWebhook:
     """Tests for the HeyReach webhook endpoint."""
 
     @pytest.mark.asyncio
-    async def test_webhook_receives_message(self, test_client: AsyncClient):
-        """Should receive and process a webhook payload."""
+    async def test_webhook_receives_message_with_body_wrapper(self, test_client: AsyncClient):
+        """Should receive and process a webhook payload with body wrapper."""
         payload = {
             "body": {
                 "lead": {
@@ -117,20 +117,34 @@ class TestHeyReachWebhook:
             assert data["lead_name"] == "John Doe"
 
     @pytest.mark.asyncio
-    async def test_webhook_invalid_payload(self, test_client: AsyncClient):
-        """Should handle invalid payload gracefully."""
+    async def test_webhook_receives_message_without_body_wrapper(self, test_client: AsyncClient):
+        """Should receive and process a webhook payload without body wrapper."""
         payload = {
-            "body": {
-                "lead": {"full_name": "John"},
-                # Missing required fields: recent_messages, conversation_id, sender
-            }
+            "lead": {
+                "full_name": "Jane Direct",
+                "company_name": "Direct Corp",
+            },
+            "recent_messages": [
+                {
+                    "creation_time": "2024-01-27T10:00:00Z",
+                    "message": "Direct message!",
+                }
+            ],
+            "conversation_id": "conv_direct",
+            "sender": {"id": "li_direct_456"},
         }
 
-        response = await test_client.post("/webhook/heyreach", json=payload)
-        # With our flexible handler, it returns 200 but logs the issue
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "received_raw"
+        # Mock the services to avoid actual API calls
+        with patch("app.main.process_incoming_message", new_callable=AsyncMock) as mock_process:
+            mock_process.return_value = {"draft_id": str(uuid.uuid4())}
+
+            response = await test_client.post("/webhook/heyreach", json=payload)
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "received"
+            assert data["conversation_id"] == "conv_direct"
+            assert data["lead_name"] == "Jane Direct"
 
     @pytest.mark.asyncio
     async def test_webhook_empty_body(self, test_client: AsyncClient):

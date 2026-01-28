@@ -128,42 +128,70 @@ class HeyReachWebhookBody(BaseModel):
 class HeyReachWebhookPayload(BaseModel):
     """Schema for incoming HeyReach webhook payload.
 
-    HeyReach wraps the data in a 'body' field.
+    Accepts both formats:
+    - With body wrapper: { "body": { "lead": {...}, ... } }
+    - Without body wrapper: { "lead": {...}, ... }
     """
 
-    body: HeyReachWebhookBody
+    # Support both wrapped and unwrapped formats
+    body: HeyReachWebhookBody | None = None
+    # Direct fields (when not wrapped)
+    lead: HeyReachLead | None = None
+    recent_messages: list[HeyReachMessage] | None = None
+    raw_conversation_id: str | None = Field(default=None, alias="conversation_id")
+    sender: HeyReachSender | None = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    def model_post_init(self, __context) -> None:
+        """Validate that we have data in one format or the other."""
+        if self.body is None and self.lead is None:
+            raise ValueError("Payload must have either 'body' wrapper or direct fields")
+
+    def _get_body(self) -> HeyReachWebhookBody:
+        """Get the body data regardless of format."""
+        if self.body:
+            return self.body
+        # Construct from direct fields
+        return HeyReachWebhookBody(
+            lead=self.lead,
+            recent_messages=self.recent_messages or [],
+            conversation_id=self.raw_conversation_id or "",
+            sender=self.sender or HeyReachSender(id=""),
+        )
 
     @property
     def lead_name(self) -> str:
         """Get the lead's full name."""
-        return self.body.lead.full_name
+        return self._get_body().lead.full_name
 
     @property
     def lead_company(self) -> str | None:
         """Get the lead's company name."""
-        return self.body.lead.company_name
+        return self._get_body().lead.company_name
 
     @property
     def linkedin_account_id(self) -> str:
         """Get the LinkedIn account ID for sending replies."""
-        return self.body.sender.id
+        return self._get_body().sender.id
 
     @property
     def conversation_id(self) -> str:
         """Get the conversation ID."""
-        return self.body.conversation_id
+        return self._get_body().conversation_id
 
     @property
     def latest_message(self) -> str:
         """Get the most recent message content."""
-        if self.body.recent_messages:
-            return self.body.recent_messages[-1].message
+        msgs = self._get_body().recent_messages
+        if msgs:
+            return msgs[-1].message
         return ""
 
     @property
-    def recent_messages(self) -> list[HeyReachMessage]:
+    def all_recent_messages(self) -> list[HeyReachMessage]:
         """Get all recent messages."""
-        return self.body.recent_messages
+        return self._get_body().recent_messages
 
 
 class HeyReachSendMessageRequest(BaseModel):
