@@ -31,13 +31,37 @@ When implementing new features or fixing bugs, follow this TDD workflow:
 - Tests are documentation - write them to be readable
 - When fixing bugs, write a test that reproduces the bug first
 
-## Railway Deployment
+## Deployment Workflow
 
-This project is deployed on Railway. The user has linked the Railway project to this directory.
+This project is deployed on Railway. Deployment is triggered by pushing to GitHub.
 
-### Using Railway CLI
+### Complete Feature/Fix Workflow
 
-When debugging production issues or checking deployment status, use Railway CLI commands:
+Follow this end-to-end workflow for all changes:
+
+#### 1. Write Tests First (TDD)
+- Write failing tests that define expected behavior
+- Run tests to verify they fail
+
+#### 2. Write Implementation Code
+- Write code to make tests pass
+- Run tests to verify they pass
+
+#### 3. Push to GitHub
+- Once all tests pass, commit and push changes to GitHub
+- This triggers automatic deployment to Railway
+
+#### 4. Monitor Deployment
+- Wait ~90 seconds for the build to complete
+- Follow the build logs using `railway logs --follow`
+- Watch for any build or startup errors
+
+#### 5. Verify Deployment
+- Check Railway project logs for application errors
+- Hit the `/health` endpoint to verify the service is running
+- Test any new endpoints or functionality in production
+
+### Railway CLI Commands
 
 - `railway logs` - View recent deployment logs
 - `railway logs --follow` - Stream logs in real-time
@@ -45,9 +69,9 @@ When debugging production issues or checking deployment status, use Railway CLI 
 - `railway variables` - List environment variables
 - `railway run <command>` - Run a command with Railway environment variables
 
-### When to Use Railway CLI
+### Health Check
 
-- When debugging production errors or unexpected behavior
-- When verifying deployments completed successfully
-- When checking environment variable configuration
-- When investigating webhook or API issues in production
+After deployment, always verify the service is healthy:
+```
+curl https://<railway-url>/health
+```
