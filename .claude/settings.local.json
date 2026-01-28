@@ -31,7 +31,8 @@
       "Bash(cmd //c \"railway status 2>&1\")",
       "Bash(cmd //c \"railway domain 2>&1\")",
       "Bash(cmd //c \"railway logs --tail 50 2>&1\")",
-      "Bash(cmd //c \"railway logs 2>&1\")"
+      "Bash(cmd //c \"railway logs 2>&1\")",
+      "Bash(cmd //c:*)"
     ]
   }
 }

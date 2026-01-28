@@ -116,35 +116,54 @@ class HeyReachSender(BaseModel):
     id: str
 
 
-class HeyReachWebhookPayload(BaseModel):
-    """Schema for incoming HeyReach webhook payload."""
+class HeyReachWebhookBody(BaseModel):
+    """Inner body of HeyReach webhook payload."""
 
     lead: HeyReachLead
     recent_messages: list[HeyReachMessage]
     conversation_id: str
     sender: HeyReachSender
 
+
+class HeyReachWebhookPayload(BaseModel):
+    """Schema for incoming HeyReach webhook payload.
+
+    HeyReach wraps the data in a 'body' field.
+    """
+
+    body: HeyReachWebhookBody
+
     @property
     def lead_name(self) -> str:
         """Get the lead's full name."""
-        return self.lead.full_name
+        return self.body.lead.full_name
 
     @property
     def lead_company(self) -> str | None:
         """Get the lead's company name."""
-        return self.lead.company_name
+        return self.body.lead.company_name
 
     @property
     def linkedin_account_id(self) -> str:
         """Get the LinkedIn account ID for sending replies."""
-        return self.sender.id
+        return self.body.sender.id
+
+    @property
+    def conversation_id(self) -> str:
+        """Get the conversation ID."""
+        return self.body.conversation_id
 
     @property
     def latest_message(self) -> str:
         """Get the most recent message content."""
-        if self.recent_messages:
-            return self.recent_messages[-1].message
+        if self.body.recent_messages:
+            return self.body.recent_messages[-1].message
         return ""
+
+    @property
+    def recent_messages(self) -> list[HeyReachMessage]:
+        """Get all recent messages."""
+        return self.body.recent_messages
 
 
 class HeyReachSendMessageRequest(BaseModel):

@@ -120,14 +120,16 @@ class TestHeyReachWebhookPayload:
     """Tests for HeyReach webhook payload schema."""
 
     def test_webhook_payload_valid(self):
-        """Should parse valid webhook payload."""
+        """Should parse valid webhook payload with body wrapper."""
         data = HeyReachWebhookPayload(
-            lead={"full_name": "John Doe"},
-            recent_messages=[
-                {"creation_time": "2024-01-27T10:00:00Z", "message": "I'm interested!"}
-            ],
-            conversation_id="conv_123",
-            sender={"id": "li_account_456"},
+            body={
+                "lead": {"full_name": "John Doe"},
+                "recent_messages": [
+                    {"creation_time": "2024-01-27T10:00:00Z", "message": "I'm interested!"}
+                ],
+                "conversation_id": "conv_123",
+                "sender": {"id": "li_account_456"},
+            }
         )
         assert data.lead_name == "John Doe"
         assert data.conversation_id == "conv_123"
@@ -137,39 +139,45 @@ class TestHeyReachWebhookPayload:
     def test_webhook_payload_with_optional_fields(self):
         """Should parse webhook with optional company/email."""
         data = HeyReachWebhookPayload(
-            lead={
-                "full_name": "John Doe",
-                "company_name": "Acme Corp",
-                "company_url": "https://acme.com",
-                "email_address": "john@acme.com",
-            },
-            recent_messages=[
-                {"creation_time": "2024-01-27T10:00:00Z", "message": "Hello!"}
-            ],
-            conversation_id="conv_123",
-            sender={"id": "li_account_456"},
+            body={
+                "lead": {
+                    "full_name": "John Doe",
+                    "company_name": "Acme Corp",
+                    "company_url": "https://acme.com",
+                    "email_address": "john@acme.com",
+                },
+                "recent_messages": [
+                    {"creation_time": "2024-01-27T10:00:00Z", "message": "Hello!"}
+                ],
+                "conversation_id": "conv_123",
+                "sender": {"id": "li_account_456"},
+            }
         )
         assert data.lead_company == "Acme Corp"
-        assert data.lead.email_address == "john@acme.com"
+        assert data.body.lead.email_address == "john@acme.com"
 
     def test_webhook_payload_missing_required(self):
         """Should reject payload missing required fields."""
         with pytest.raises(ValidationError):
             HeyReachWebhookPayload(
-                lead={"full_name": "John"},
-                # Missing: recent_messages, conversation_id, sender
+                body={
+                    "lead": {"full_name": "John"},
+                    # Missing: recent_messages, conversation_id, sender
+                }
             )
 
     def test_webhook_payload_multiple_messages(self):
         """Should return the latest message from conversation history."""
         data = HeyReachWebhookPayload(
-            lead={"full_name": "John Doe"},
-            recent_messages=[
-                {"creation_time": "2024-01-27T09:00:00Z", "message": "First message"},
-                {"creation_time": "2024-01-27T10:00:00Z", "message": "Latest reply"},
-            ],
-            conversation_id="conv_123",
-            sender={"id": "li_account_456"},
+            body={
+                "lead": {"full_name": "John Doe"},
+                "recent_messages": [
+                    {"creation_time": "2024-01-27T09:00:00Z", "message": "First message"},
+                    {"creation_time": "2024-01-27T10:00:00Z", "message": "Latest reply"},
+                ],
+                "conversation_id": "conv_123",
+                "sender": {"id": "li_account_456"},
+            }
         )
         assert data.latest_message == "Latest reply"
 

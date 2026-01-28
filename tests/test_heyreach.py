@@ -86,20 +86,22 @@ class TestHeyReachWebhook:
     async def test_webhook_receives_message(self, test_client: AsyncClient):
         """Should receive and process a webhook payload."""
         payload = {
-            "lead": {
-                "full_name": "John Doe",
-                "company_name": "Tech Corp",
-                "company_url": "https://techcorp.com",
-                "email_address": "john@techcorp.com",
-            },
-            "recent_messages": [
-                {
-                    "creation_time": "2024-01-27T10:00:00Z",
-                    "message": "I'm interested in your product!",
-                }
-            ],
-            "conversation_id": "conv_123",
-            "sender": {"id": "li_account_456"},
+            "body": {
+                "lead": {
+                    "full_name": "John Doe",
+                    "company_name": "Tech Corp",
+                    "company_url": "https://techcorp.com",
+                    "email_address": "john@techcorp.com",
+                },
+                "recent_messages": [
+                    {
+                        "creation_time": "2024-01-27T10:00:00Z",
+                        "message": "I'm interested in your product!",
+                    }
+                ],
+                "conversation_id": "conv_123",
+                "sender": {"id": "li_account_456"},
+            }
         }
 
         # Mock the services to avoid actual API calls
@@ -116,17 +118,24 @@ class TestHeyReachWebhook:
 
     @pytest.mark.asyncio
     async def test_webhook_invalid_payload(self, test_client: AsyncClient):
-        """Should return 422 for invalid payload."""
+        """Should handle invalid payload gracefully."""
         payload = {
-            "lead": {"full_name": "John"},
-            # Missing required fields: recent_messages, conversation_id, sender
+            "body": {
+                "lead": {"full_name": "John"},
+                # Missing required fields: recent_messages, conversation_id, sender
+            }
         }
 
         response = await test_client.post("/webhook/heyreach", json=payload)
-        assert response.status_code == 422
+        # With our flexible handler, it returns 200 but logs the issue
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "received_raw"
 
     @pytest.mark.asyncio
     async def test_webhook_empty_body(self, test_client: AsyncClient):
-        """Should return 422 for empty body."""
+        """Should handle empty body gracefully."""
         response = await test_client.post("/webhook/heyreach", json={})
-        assert response.status_code == 422
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "received_raw"
