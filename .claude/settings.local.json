@@ -22,7 +22,11 @@
       "Bash(cmd //c \"railway logs --tail 50\":*)",
       "Bash(railway:*)",
       "Bash(where railway:*)",
-      "Bash(cmd //c \"railway logs -d --tail 50\")"
+      "Bash(cmd //c \"railway logs -d --tail 50\")",
+      "Bash(cmd //c \"railway logs --tail 30\")",
+      "Bash(cmd //c \"railway status\")",
+      "Bash(cmd //c \"railway domain\")",
+      "Bash(curl:*)"
     ]
   }
 }

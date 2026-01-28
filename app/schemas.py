@@ -46,7 +46,7 @@ class DraftCreate(DraftBase):
     """Schema for creating a draft."""
 
     conversation_id: uuid.UUID
-    telegram_message_id: int | None = None
+    slack_message_ts: str | None = None
 
 
 class DraftUpdate(BaseModel):
@@ -64,7 +64,7 @@ class DraftResponse(DraftBase):
 
     id: uuid.UUID
     conversation_id: uuid.UUID
-    telegram_message_id: int | None
+    slack_message_ts: str | None
     snooze_until: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -122,13 +122,12 @@ class HeyReachSendMessageResponse(BaseModel):
     error: str | None = None
 
 
-# Telegram callback schemas
-class TelegramCallbackData(BaseModel):
-    """Schema for Telegram callback button data."""
+# Slack action schemas
+class SlackActionPayload(BaseModel):
+    """Schema for Slack action payload."""
 
-    action: str
+    action_id: str
     draft_id: uuid.UUID
-    extra: str | None = None
 
 
 # Health check schema

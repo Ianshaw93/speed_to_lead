@@ -42,13 +42,13 @@ async def send_snooze_reminder(draft_id: uuid.UUID) -> None:
         draft_id: The ID of the draft to remind about.
     """
     # Import here to avoid circular imports
-    from app.services.telegram import get_telegram_bot
+    from app.services.slack import get_slack_bot
 
-    bot = get_telegram_bot()
+    bot = get_slack_bot()
     await bot.send_confirmation(
         f"⏰ Reminder: You have a snoozed draft waiting for your attention!"
     )
-    # TODO: Re-send the draft notification with updated keyboard
+    # TODO: Re-send the draft notification with updated buttons
 
 
 class SchedulerService:

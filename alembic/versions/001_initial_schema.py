@@ -64,7 +64,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column('ai_draft', sa.Text(), nullable=False),
-        sa.Column('telegram_message_id', sa.BigInteger(), nullable=True),
+        sa.Column('slack_message_ts', sa.String(50), nullable=True),
         sa.Column('snooze_until', sa.DateTime(timezone=True), nullable=True),
         sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),

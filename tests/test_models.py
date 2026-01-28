@@ -76,7 +76,7 @@ class TestDraftModel:
             conversation_id=conversation.id,
             status=DraftStatus.PENDING,
             ai_draft="Hello! Thanks for your interest...",
-            telegram_message_id=12345,
+            slack_message_ts="1234567890.123456",
         )
         test_db_session.add(draft)
         await test_db_session.commit()
@@ -86,7 +86,7 @@ class TestDraftModel:
         assert draft.conversation_id == conversation.id
         assert draft.status == DraftStatus.PENDING
         assert draft.ai_draft == "Hello! Thanks for your interest..."
-        assert draft.telegram_message_id == 12345
+        assert draft.slack_message_ts == "1234567890.123456"
         assert draft.snooze_until is None
 
     @pytest.mark.asyncio

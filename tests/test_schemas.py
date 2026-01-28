@@ -11,12 +11,11 @@ from app.schemas import (
     ConversationCreate,
     ConversationResponse,
     DraftCreate,
-    DraftResponse,
     DraftUpdate,
     HeyReachWebhookPayload,
     HealthResponse,
     MessageLogCreate,
-    TelegramCallbackData,
+    SlackActionPayload,
 )
 
 
@@ -73,7 +72,6 @@ class TestDraftSchemas:
         )
         assert data.conversation_id == conv_id
         assert data.status == DraftStatus.PENDING
-        assert data.telegram_message_id is None
 
     def test_draft_update_partial(self):
         """Should allow partial updates."""
@@ -155,29 +153,27 @@ class TestHeyReachWebhookPayload:
             )
 
 
-class TestTelegramCallbackData:
-    """Tests for Telegram callback data schema."""
+class TestSlackActionPayload:
+    """Tests for Slack action payload schema."""
 
-    def test_callback_data_approve(self):
-        """Should parse approve callback data."""
+    def test_action_payload_approve(self):
+        """Should parse approve action payload."""
         draft_id = uuid.uuid4()
-        data = TelegramCallbackData(
-            action="approve",
+        data = SlackActionPayload(
+            action_id="approve",
             draft_id=draft_id,
         )
-        assert data.action == "approve"
+        assert data.action_id == "approve"
         assert data.draft_id == draft_id
-        assert data.extra is None
 
-    def test_callback_data_with_extra(self):
-        """Should parse callback with extra data."""
+    def test_action_payload_snooze(self):
+        """Should parse snooze action payload."""
         draft_id = uuid.uuid4()
-        data = TelegramCallbackData(
-            action="snooze",
+        data = SlackActionPayload(
+            action_id="snooze_1h",
             draft_id=draft_id,
-            extra="1h",
         )
-        assert data.extra == "1h"
+        assert data.action_id == "snooze_1h"
 
 
 class TestHealthResponse:

@@ -22,9 +22,9 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
     deepseek_model: str = "deepseek-chat"
 
-    # Telegram
-    telegram_bot_token: str = ""
-    telegram_chat_id: str = ""
+    # Slack
+    slack_bot_token: str = ""
+    slack_channel_id: str = ""
 
     # Database
     database_url: str = "sqlite+aiosqlite:///./speed_to_lead.db"

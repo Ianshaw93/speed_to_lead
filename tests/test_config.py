@@ -15,8 +15,8 @@ class TestSettings:
             "HEYREACH_API_KEY": "test_heyreach_key",
             "DEEPSEEK_API_KEY": "test_deepseek_key",
             "DEEPSEEK_MODEL": "deepseek-chat",
-            "TELEGRAM_BOT_TOKEN": "test_telegram_token",
-            "TELEGRAM_CHAT_ID": "123456789",
+            "SLACK_BOT_TOKEN": "xoxb-test-token",
+            "SLACK_CHANNEL_ID": "C123456789",
             "DATABASE_URL": "postgresql+asyncpg://user:pass@localhost/db",
             "SECRET_KEY": "test_secret",
             "ENVIRONMENT": "testing",
@@ -30,8 +30,8 @@ class TestSettings:
             assert settings.heyreach_api_key == "test_heyreach_key"
             assert settings.deepseek_api_key == "test_deepseek_key"
             assert settings.deepseek_model == "deepseek-chat"
-            assert settings.telegram_bot_token == "test_telegram_token"
-            assert settings.telegram_chat_id == "123456789"
+            assert settings.slack_bot_token == "xoxb-test-token"
+            assert settings.slack_channel_id == "C123456789"
             assert settings.database_url == "postgresql+asyncpg://user:pass@localhost/db"
             assert settings.secret_key == "test_secret"
             assert settings.environment == "testing"
@@ -41,8 +41,8 @@ class TestSettings:
         env_vars = {
             "HEYREACH_API_KEY": "test_key",
             "DEEPSEEK_API_KEY": "test_key",
-            "TELEGRAM_BOT_TOKEN": "test_token",
-            "TELEGRAM_CHAT_ID": "123",
+            "SLACK_BOT_TOKEN": "xoxb-test",
+            "SLACK_CHANNEL_ID": "C123",
             "DATABASE_URL": "postgresql+asyncpg://localhost/db",
             "SECRET_KEY": "secret",
         }
@@ -62,8 +62,8 @@ class TestSettings:
         env_vars = {
             "HEYREACH_API_KEY": "test_key",
             "DEEPSEEK_API_KEY": "test_key",
-            "TELEGRAM_BOT_TOKEN": "test_token",
-            "TELEGRAM_CHAT_ID": "123",
+            "SLACK_BOT_TOKEN": "xoxb-test",
+            "SLACK_CHANNEL_ID": "C123",
             "DATABASE_URL": "postgresql+asyncpg://localhost/db",
             "SECRET_KEY": "secret",
         }
@@ -80,8 +80,8 @@ class TestSettings:
         env_vars = {
             "HEYREACH_API_KEY": "test_key",
             "DEEPSEEK_API_KEY": "test_key",
-            "TELEGRAM_BOT_TOKEN": "test_token",
-            "TELEGRAM_CHAT_ID": "123",
+            "SLACK_BOT_TOKEN": "xoxb-test",
+            "SLACK_CHANNEL_ID": "C123",
             "DATABASE_URL": "postgresql+asyncpg://localhost/db",
             "SECRET_KEY": "secret",
             "ENVIRONMENT": "production",
@@ -105,8 +105,8 @@ class TestSettings:
         env_vars = {
             "HEYREACH_API_KEY": "test_key",
             "DEEPSEEK_API_KEY": "test_key",
-            "TELEGRAM_BOT_TOKEN": "test_token",
-            "TELEGRAM_CHAT_ID": "123",
+            "SLACK_BOT_TOKEN": "xoxb-test",
+            "SLACK_CHANNEL_ID": "C123",
             "DATABASE_URL": "postgresql+asyncpg://localhost/db",
             "SECRET_KEY": "secret",
         }

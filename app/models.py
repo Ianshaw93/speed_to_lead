@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import JSON, BigInteger, DateTime, Enum, ForeignKey, String, Text
+from sqlalchemy import JSON, DateTime, Enum, ForeignKey, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -83,7 +83,7 @@ class Draft(Base):
         default=DraftStatus.PENDING,
     )
     ai_draft: Mapped[str] = mapped_column(Text)
-    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    slack_message_ts: Mapped[str | None] = mapped_column(String(50), nullable=True)
     snooze_until: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
