@@ -58,6 +58,16 @@ async def health_check() -> HealthResponse:
     )
 
 
+@app.get("/version")
+async def version() -> dict:
+    """Return version info for debugging deployment issues."""
+    return {
+        "version": "2026-01-30-v2",
+        "sender_id_type": "int|str",
+        "migrations_retry": True,
+    }
+
+
 async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
     """Process an incoming message from HeyReach webhook.
 
