@@ -1,7 +1,9 @@
 import os
+import time
 from logging.config import fileConfig
 
 from sqlalchemy import create_engine, pool
+from sqlalchemy.exc import OperationalError
 
 from alembic import context
 
@@ -61,14 +63,28 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
 
-    with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-        )
+    # Retry connection with backoff for Railway internal DNS resolution
+    max_retries = 5
+    retry_delay = 2  # seconds
 
-        with context.begin_transaction():
-            context.run_migrations()
+    for attempt in range(max_retries):
+        try:
+            with connectable.connect() as connection:
+                context.configure(
+                    connection=connection,
+                    target_metadata=target_metadata,
+                )
+
+                with context.begin_transaction():
+                    context.run_migrations()
+            return  # Success, exit the retry loop
+        except OperationalError as e:
+            if attempt < max_retries - 1:
+                print(f"Database connection failed (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s...")
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                raise  # Re-raise on final attempt
 
 
 if context.is_offline_mode():
