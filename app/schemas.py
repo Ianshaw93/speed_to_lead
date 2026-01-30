@@ -136,13 +136,13 @@ class HeyReachSender(BaseModel):
 
 
 class HeyReachCampaign(BaseModel):
-    """Campaign information."""
+    """Campaign information from HeyReach."""
 
     model_config = ConfigDict(extra="ignore")
 
     id: int | None = None
     name: str | None = None
-    status: str | None = None
+    status: int | str | None = None  # Can be int (e.g., 2) or str
 
 
 class HeyReachWebhookPayload(BaseModel):
