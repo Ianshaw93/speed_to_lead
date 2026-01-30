@@ -235,3 +235,4 @@ class HealthResponse(BaseModel):
 
     status: str
     environment: str
+    version: str = "2026-01-30-v3"
