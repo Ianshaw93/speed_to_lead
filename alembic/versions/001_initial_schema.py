@@ -80,7 +80,7 @@ def upgrade() -> None:
             sa.Column('conversation_id', sa.UUID(), nullable=False),
             sa.Column(
                 'status',
-                sa.Enum('pending', 'approved', 'rejected', 'snoozed', name='draft_status', create_type=False),
+                postgresql.ENUM('pending', 'approved', 'rejected', 'snoozed', name='draft_status', create_type=False),
                 nullable=False,
             ),
             sa.Column('ai_draft', sa.Text(), nullable=False),
@@ -109,7 +109,7 @@ def upgrade() -> None:
             sa.Column('conversation_id', sa.UUID(), nullable=False),
             sa.Column(
                 'direction',
-                sa.Enum('inbound', 'outbound', name='message_direction', create_type=False),
+                postgresql.ENUM('inbound', 'outbound', name='message_direction', create_type=False),
                 nullable=False,
             ),
             sa.Column('content', sa.Text(), nullable=False),
