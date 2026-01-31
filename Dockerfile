@@ -29,5 +29,5 @@ EXPOSE 8000
 # Set unbuffered output
 ENV PYTHONUNBUFFERED=1
 
-# Run migrations then start the application
-CMD ["sh", "-c", "echo '=== RUNNING ALEMBIC MIGRATIONS ===' && alembic upgrade head && echo '=== MIGRATIONS COMPLETE ===' && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --log-level info"]
+# Run migrations (non-blocking) then start the application
+CMD ["sh", "-c", "echo '=== RUNNING ALEMBIC MIGRATIONS ===' && (alembic upgrade head || echo '=== MIGRATIONS FAILED, CONTINUING ===' ) && echo '=== STARTING APP ===' && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --log-level info"]
