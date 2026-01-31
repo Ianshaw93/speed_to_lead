@@ -75,3 +75,22 @@ After deployment, always verify the service is healthy:
 ```
 curl https://<railway-url>/health
 ```
+
+### Troubleshooting Deployment Failures
+
+**IMPORTANT**: When deployments fail, always check the **deploy logs** (not just build logs):
+
+1. **Build logs** show if the Docker image was built successfully
+2. **Deploy logs** show what happens when the container starts - this is where startup crashes appear
+
+Common issues to look for in deploy logs:
+- Import errors (missing dependencies)
+- Environment variable issues (e.g., `${PORT:-8000}` not interpreted - needs `sh -c` wrapper)
+- Database connection failures
+- Missing required config
+
+If the Railway CLI isn't working or isn't linked to the project:
+1. Ask the user to check the Railway dashboard for deploy logs
+2. Or ask them to run `railway login` and `railway link` to connect the CLI
+
+**Railway URL**: https://speedtolead-production.up.railway.app
