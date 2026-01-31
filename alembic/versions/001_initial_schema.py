@@ -19,89 +19,102 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Create enums using raw SQL with DO block for IF NOT EXISTS
     conn = op.get_bind()
 
-    # Create draft_status enum if not exists
-    conn.execute(sa.text("""
-        DO $$ BEGIN
-            CREATE TYPE draft_status AS ENUM ('pending', 'approved', 'rejected', 'snoozed');
-        EXCEPTION
-            WHEN duplicate_object THEN null;
-        END $$;
-    """))
+    # Check if types already exist and skip if so
+    result = conn.execute(sa.text(
+        "SELECT 1 FROM pg_type WHERE typname = 'draft_status'"
+    ))
+    if not result.fetchone():
+        conn.execute(sa.text(
+            "CREATE TYPE draft_status AS ENUM ('pending', 'approved', 'rejected', 'snoozed')"
+        ))
 
-    # Create message_direction enum if not exists
-    conn.execute(sa.text("""
-        DO $$ BEGIN
-            CREATE TYPE message_direction AS ENUM ('inbound', 'outbound');
-        EXCEPTION
-            WHEN duplicate_object THEN null;
-        END $$;
-    """))
+    result = conn.execute(sa.text(
+        "SELECT 1 FROM pg_type WHERE typname = 'message_direction'"
+    ))
+    if not result.fetchone():
+        conn.execute(sa.text(
+            "CREATE TYPE message_direction AS ENUM ('inbound', 'outbound')"
+        ))
 
-    # Create conversations table
-    op.create_table(
-        'conversations',
-        sa.Column('id', sa.UUID(), nullable=False),
-        sa.Column('heyreach_lead_id', sa.String(255), nullable=False),
-        sa.Column('linkedin_profile_url', sa.String(500), nullable=False),
-        sa.Column('lead_name', sa.String(255), nullable=False),
-        sa.Column('conversation_history', postgresql.JSONB(), nullable=True),
-        sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-        sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-        sa.PrimaryKeyConstraint('id'),
-    )
-    op.create_index(
-        'ix_conversations_heyreach_lead_id',
-        'conversations',
-        ['heyreach_lead_id'],
-    )
+    # Check if conversations table exists
+    result = conn.execute(sa.text(
+        "SELECT 1 FROM information_schema.tables WHERE table_name = 'conversations'"
+    ))
+    if not result.fetchone():
+        # Create conversations table
+        op.create_table(
+            'conversations',
+            sa.Column('id', sa.UUID(), nullable=False),
+            sa.Column('heyreach_lead_id', sa.String(255), nullable=False),
+            sa.Column('linkedin_profile_url', sa.String(500), nullable=False),
+            sa.Column('lead_name', sa.String(255), nullable=False),
+            sa.Column('conversation_history', postgresql.JSONB(), nullable=True),
+            sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+            sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+            sa.PrimaryKeyConstraint('id'),
+        )
+        op.create_index(
+            'ix_conversations_heyreach_lead_id',
+            'conversations',
+            ['heyreach_lead_id'],
+        )
 
-    # Create drafts table
-    op.create_table(
-        'drafts',
-        sa.Column('id', sa.UUID(), nullable=False),
-        sa.Column('conversation_id', sa.UUID(), nullable=False),
-        sa.Column(
-            'status',
-            sa.Enum('pending', 'approved', 'rejected', 'snoozed', name='draft_status'),
-            nullable=False,
-        ),
-        sa.Column('ai_draft', sa.Text(), nullable=False),
-        sa.Column('slack_message_ts', sa.String(50), nullable=True),
-        sa.Column('snooze_until', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-        sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-        sa.PrimaryKeyConstraint('id'),
-        sa.ForeignKeyConstraint(['conversation_id'], ['conversations.id']),
-    )
-    op.create_index(
-        'ix_drafts_conversation_id',
-        'drafts',
-        ['conversation_id'],
-    )
+    # Check if drafts table exists
+    result = conn.execute(sa.text(
+        "SELECT 1 FROM information_schema.tables WHERE table_name = 'drafts'"
+    ))
+    if not result.fetchone():
+        # Create drafts table
+        op.create_table(
+            'drafts',
+            sa.Column('id', sa.UUID(), nullable=False),
+            sa.Column('conversation_id', sa.UUID(), nullable=False),
+            sa.Column(
+                'status',
+                sa.Enum('pending', 'approved', 'rejected', 'snoozed', name='draft_status'),
+                nullable=False,
+            ),
+            sa.Column('ai_draft', sa.Text(), nullable=False),
+            sa.Column('slack_message_ts', sa.String(50), nullable=True),
+            sa.Column('snooze_until', sa.DateTime(timezone=True), nullable=True),
+            sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+            sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+            sa.PrimaryKeyConstraint('id'),
+            sa.ForeignKeyConstraint(['conversation_id'], ['conversations.id']),
+        )
+        op.create_index(
+            'ix_drafts_conversation_id',
+            'drafts',
+            ['conversation_id'],
+        )
 
-    # Create message_log table
-    op.create_table(
-        'message_log',
-        sa.Column('id', sa.UUID(), nullable=False),
-        sa.Column('conversation_id', sa.UUID(), nullable=False),
-        sa.Column(
-            'direction',
-            sa.Enum('inbound', 'outbound', name='message_direction'),
-            nullable=False,
-        ),
-        sa.Column('content', sa.Text(), nullable=False),
-        sa.Column('sent_at', sa.DateTime(timezone=True), nullable=False),
-        sa.PrimaryKeyConstraint('id'),
-        sa.ForeignKeyConstraint(['conversation_id'], ['conversations.id']),
-    )
-    op.create_index(
-        'ix_message_log_conversation_id',
-        'message_log',
-        ['conversation_id'],
-    )
+    # Check if message_log table exists
+    result = conn.execute(sa.text(
+        "SELECT 1 FROM information_schema.tables WHERE table_name = 'message_log'"
+    ))
+    if not result.fetchone():
+        # Create message_log table
+        op.create_table(
+            'message_log',
+            sa.Column('id', sa.UUID(), nullable=False),
+            sa.Column('conversation_id', sa.UUID(), nullable=False),
+            sa.Column(
+                'direction',
+                sa.Enum('inbound', 'outbound', name='message_direction'),
+                nullable=False,
+            ),
+            sa.Column('content', sa.Text(), nullable=False),
+            sa.Column('sent_at', sa.DateTime(timezone=True), nullable=False),
+            sa.PrimaryKeyConstraint('id'),
+            sa.ForeignKeyConstraint(['conversation_id'], ['conversations.id']),
+        )
+        op.create_index(
+            'ix_message_log_conversation_id',
+            'message_log',
+            ['conversation_id'],
+        )
 
 
 def downgrade() -> None:
