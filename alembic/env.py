@@ -38,6 +38,9 @@ def get_sync_url() -> str:
     if url.startswith("sqlite"):
         # For local sqlite, use sync sqlite
         url = url.replace("sqlite+aiosqlite", "sqlite")
+    # Add sslmode for public PostgreSQL connections
+    if url.startswith("postgresql://") and "sslmode" not in url:
+        url = url + ("&" if "?" in url else "?") + "sslmode=require"
     return url
 
 
