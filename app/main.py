@@ -103,8 +103,10 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
     Returns:
         Dict with draft_id if successful.
     """
+    print("=== PROCESSING MESSAGE IN BACKGROUND ===", flush=True)
     try:
         async with async_session_factory() as session:
+            print("Database session opened", flush=True)
             # 1. Upsert conversation record
             result = await session.execute(
                 select(Conversation).where(
@@ -144,15 +146,18 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
             session.add(message_log)
 
             # 3. Generate AI draft via DeepSeek
+            print(f"Generating AI draft for conversation {conversation.id}", flush=True)
             logger.info(f"Generating AI draft for conversation {conversation.id}")
             ai_draft = await generate_reply_draft(
                 lead_name=payload.lead_name,
                 lead_message=payload.latest_message,
                 conversation_history=history,
             )
+            print(f"Generated draft: {ai_draft[:100]}...", flush=True)
             logger.info(f"Generated draft: {ai_draft[:100]}...")
 
             # 4. Send draft to Slack for approval
+            print("Sending to Slack...", flush=True)
             slack_bot = SlackBot()
             slack_ts = await slack_bot.send_draft_notification(
                 draft_id=str(uuid.uuid4()),  # Temporary, will update after creating draft
@@ -163,6 +168,7 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
                 lead_message=payload.latest_message,
                 ai_draft=ai_draft,
             )
+            print(f"Slack notification sent, ts: {slack_ts}", flush=True)
             logger.info(f"Sent Slack notification, ts: {slack_ts}")
 
             # 5. Store draft with pending status
@@ -179,6 +185,7 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
             return {"draft_id": str(draft.id)}
 
     except Exception as e:
+        print(f"!!! ERROR processing message: {e}", flush=True)
         logger.error(f"Error processing message: {e}", exc_info=True)
         return {"error": str(e)}
 
@@ -209,8 +216,10 @@ async def heyreach_webhook(
     Returns:
         Acknowledgment response.
     """
-    # Log raw body for debugging
+    # Log raw body for debugging - use print with flush to ensure it appears
+    print("=== WEBHOOK RECEIVED ===", flush=True)
     body = await request.body()
+    print(f"Body length: {len(body)}", flush=True)
     logger.info(f"Raw webhook body: {body.decode('utf-8', errors='replace')}")
 
     # Parse the JSON body
