@@ -52,9 +52,9 @@ Follow this end-to-end workflow for all changes:
 - This triggers automatic deployment to Railway
 
 #### 4. Monitor Deployment
-- Wait ~90 seconds for the build to complete
-- Follow the build logs using `railway logs --follow`
-- Watch for any build or startup errors
+- Wait ~30 seconds, then check build logs using `railway logs`
+- Wait ~90 seconds total for deployment to complete
+- Watch for any build or startup errors in the logs
 
 #### 5. Verify Deployment
 - Check Railway project logs for application errors
