@@ -19,21 +19,26 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Create draft_status enum
-    draft_status = postgresql.ENUM(
-        'pending', 'approved', 'rejected', 'snoozed',
-        name='draft_status',
-        create_type=False,
-    )
-    draft_status.create(op.get_bind(), checkfirst=True)
+    # Create enums using raw SQL with DO block for IF NOT EXISTS
+    conn = op.get_bind()
 
-    # Create message_direction enum
-    message_direction = postgresql.ENUM(
-        'inbound', 'outbound',
-        name='message_direction',
-        create_type=False,
-    )
-    message_direction.create(op.get_bind(), checkfirst=True)
+    # Create draft_status enum if not exists
+    conn.execute(sa.text("""
+        DO $$ BEGIN
+            CREATE TYPE draft_status AS ENUM ('pending', 'approved', 'rejected', 'snoozed');
+        EXCEPTION
+            WHEN duplicate_object THEN null;
+        END $$;
+    """))
+
+    # Create message_direction enum if not exists
+    conn.execute(sa.text("""
+        DO $$ BEGIN
+            CREATE TYPE message_direction AS ENUM ('inbound', 'outbound');
+        EXCEPTION
+            WHEN duplicate_object THEN null;
+        END $$;
+    """))
 
     # Create conversations table
     op.create_table(
