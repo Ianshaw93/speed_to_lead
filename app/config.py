@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     # Slack
     slack_bot_token: str = ""
     slack_channel_id: str = ""
+    slack_signing_secret: str = ""
 
     # Database
     database_url: str = "sqlite+aiosqlite:///./speed_to_lead.db"

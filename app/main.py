@@ -31,6 +31,9 @@ try:
     from app.services.deepseek import generate_reply_draft
     from app.services.slack import SlackBot
     logger.info("Services imported")
+
+    from app.routers.slack import router as slack_router
+    logger.info("Routers imported")
 except Exception as e:
     logger.error(f"Import failed: {e}", exc_info=True)
     raise
@@ -56,6 +59,9 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Include routers
+app.include_router(slack_router)
 
 
 @app.middleware("http")
@@ -124,6 +130,7 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
             if conversation:
                 # Update existing conversation
                 conversation.conversation_history = history
+                conversation.linkedin_account_id = payload.linkedin_account_id
                 logger.info(f"Updated conversation {conversation.id}")
             else:
                 # Create new conversation
@@ -131,6 +138,7 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
                     heyreach_lead_id=payload.conversation_id,
                     linkedin_profile_url=f"linkedin://conversation/{payload.conversation_id}",
                     lead_name=payload.lead_name,
+                    linkedin_account_id=payload.linkedin_account_id,
                     conversation_history=history,
                 )
                 session.add(conversation)

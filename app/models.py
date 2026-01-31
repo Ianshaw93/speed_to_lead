@@ -45,6 +45,9 @@ class Conversation(Base):
     heyreach_lead_id: Mapped[str] = mapped_column(String(255), index=True)
     linkedin_profile_url: Mapped[str] = mapped_column(String(500))
     lead_name: Mapped[str] = mapped_column(String(255))
+    linkedin_account_id: Mapped[str | None] = mapped_column(
+        String(100), nullable=True
+    )  # sender.id from HeyReach webhook, needed to send messages
     conversation_history: Mapped[list[dict[str, Any]] | None] = mapped_column(
         JSON,
         default=list,
