@@ -90,7 +90,7 @@ Common issues to look for in deploy logs:
 - Missing required config
 
 If the Railway CLI isn't working or isn't linked to the project:
-1. Ask the user to check the Railway dashboard for deploy logs
-2. Or ask them to run `railway login` and `railway link` to connect the CLI
+1. Ask the user to run `railway login` and `railway link` to connect the CLI
+2. Fallback: Ask the user to check the Railway dashboard for deploy logs
 
 **Railway URL**: https://speedtolead-production.up.railway.app
