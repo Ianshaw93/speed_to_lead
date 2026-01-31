@@ -36,6 +36,35 @@ class TestConversationModel:
         assert conversation.updated_at is not None
 
     @pytest.mark.asyncio
+    async def test_conversation_linkedin_account_id(self, test_db_session: AsyncSession):
+        """Should support linkedin_account_id field for sending messages."""
+        conversation = Conversation(
+            heyreach_lead_id="lead_linkedin",
+            linkedin_profile_url="https://linkedin.com/in/test",
+            lead_name="LinkedIn Test",
+            linkedin_account_id="12345678",
+        )
+        test_db_session.add(conversation)
+        await test_db_session.commit()
+        await test_db_session.refresh(conversation)
+
+        assert conversation.linkedin_account_id == "12345678"
+
+    @pytest.mark.asyncio
+    async def test_conversation_linkedin_account_id_nullable(self, test_db_session: AsyncSession):
+        """linkedin_account_id should be nullable for backwards compatibility."""
+        conversation = Conversation(
+            heyreach_lead_id="lead_no_linkedin",
+            linkedin_profile_url="https://linkedin.com/in/nolinkedin",
+            lead_name="No LinkedIn ID",
+        )
+        test_db_session.add(conversation)
+        await test_db_session.commit()
+        await test_db_session.refresh(conversation)
+
+        assert conversation.linkedin_account_id is None
+
+    @pytest.mark.asyncio
     async def test_conversation_timestamps_update(self, test_db_session: AsyncSession):
         """Should update the updated_at timestamp on changes."""
         conversation = Conversation(
@@ -202,3 +231,67 @@ class TestMessageLogModel:
         assert len(messages) == 2
         directions = {m.direction for m in messages}
         assert directions == {MessageDirection.INBOUND, MessageDirection.OUTBOUND}
+
+
+class TestSchemaVerification:
+    """Tests to verify database schema has all required columns."""
+
+    def test_conversation_has_required_columns(self):
+        """Conversation model should have all required columns."""
+        from sqlalchemy import inspect
+
+        mapper = inspect(Conversation)
+        column_names = {col.key for col in mapper.columns}
+
+        required_columns = {
+            'id',
+            'heyreach_lead_id',
+            'linkedin_profile_url',
+            'lead_name',
+            'linkedin_account_id',  # Added for sending messages via HeyReach
+            'conversation_history',
+            'created_at',
+            'updated_at',
+        }
+
+        missing = required_columns - column_names
+        assert not missing, f"Missing columns in Conversation: {missing}"
+
+    def test_draft_has_required_columns(self):
+        """Draft model should have all required columns."""
+        from sqlalchemy import inspect
+
+        mapper = inspect(Draft)
+        column_names = {col.key for col in mapper.columns}
+
+        required_columns = {
+            'id',
+            'conversation_id',
+            'status',
+            'ai_draft',
+            'slack_message_ts',
+            'snooze_until',
+            'created_at',
+            'updated_at',
+        }
+
+        missing = required_columns - column_names
+        assert not missing, f"Missing columns in Draft: {missing}"
+
+    def test_message_log_has_required_columns(self):
+        """MessageLog model should have all required columns."""
+        from sqlalchemy import inspect
+
+        mapper = inspect(MessageLog)
+        column_names = {col.key for col in mapper.columns}
+
+        required_columns = {
+            'id',
+            'conversation_id',
+            'direction',
+            'content',
+            'sent_at',
+        }
+
+        missing = required_columns - column_names
+        assert not missing, f"Missing columns in MessageLog: {missing}"
