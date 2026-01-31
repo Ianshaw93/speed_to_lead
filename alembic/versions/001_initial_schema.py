@@ -22,21 +22,28 @@ def upgrade() -> None:
     conn = op.get_bind()
 
     # Check if types already exist and skip if so
+    print("=== CHECKING FOR EXISTING TYPES ===", flush=True)
     result = conn.execute(sa.text(
-        "SELECT 1 FROM pg_type WHERE typname = 'draft_status'"
+        "SELECT typname FROM pg_type WHERE typname IN ('draft_status', 'message_direction')"
     ))
-    if not result.fetchone():
+    existing_types = [row[0] for row in result.fetchall()]
+    print(f"=== EXISTING TYPES: {existing_types} ===", flush=True)
+
+    if 'draft_status' not in existing_types:
+        print("=== CREATING draft_status ===", flush=True)
         conn.execute(sa.text(
             "CREATE TYPE draft_status AS ENUM ('pending', 'approved', 'rejected', 'snoozed')"
         ))
+    else:
+        print("=== SKIPPING draft_status (already exists) ===", flush=True)
 
-    result = conn.execute(sa.text(
-        "SELECT 1 FROM pg_type WHERE typname = 'message_direction'"
-    ))
-    if not result.fetchone():
+    if 'message_direction' not in existing_types:
+        print("=== CREATING message_direction ===", flush=True)
         conn.execute(sa.text(
             "CREATE TYPE message_direction AS ENUM ('inbound', 'outbound')"
         ))
+    else:
+        print("=== SKIPPING message_direction (already exists) ===", flush=True)
 
     # Check if conversations table exists
     result = conn.execute(sa.text(
