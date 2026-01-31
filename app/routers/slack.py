@@ -122,6 +122,11 @@ async def _process_approve(draft_id: uuid.UUID, message_ts: str) -> None:
 
             if not draft:
                 logger.error(f"Draft {draft_id} not found")
+                slack_bot = get_slack_bot()
+                await slack_bot.remove_buttons(
+                    message_ts=message_ts,
+                    final_text="Error: Draft not found. It may have been deleted."
+                )
                 return
 
             conversation = draft.conversation
@@ -201,6 +206,10 @@ async def handle_edit(
 
         if not draft:
             logger.error(f"Draft {draft_id} not found for edit")
+            slack_bot = get_slack_bot()
+            await slack_bot.send_confirmation(
+                "Error: Draft not found. It may have been deleted."
+            )
             return
 
         slack_bot = get_slack_bot()
@@ -239,6 +248,11 @@ async def _process_regenerate(draft_id: uuid.UUID, message_ts: str) -> None:
 
             if not draft:
                 logger.error(f"Draft {draft_id} not found for regenerate")
+                slack_bot = get_slack_bot()
+                await slack_bot.remove_buttons(
+                    message_ts=message_ts,
+                    final_text="Error: Draft not found. It may have been deleted."
+                )
                 return
 
             conversation = draft.conversation
@@ -306,6 +320,11 @@ async def _process_reject(draft_id: uuid.UUID, message_ts: str) -> None:
 
             if not draft:
                 logger.error(f"Draft {draft_id} not found for reject")
+                slack_bot = get_slack_bot()
+                await slack_bot.remove_buttons(
+                    message_ts=message_ts,
+                    final_text="Error: Draft not found. It may have been deleted."
+                )
                 return
 
             draft.status = DraftStatus.REJECTED
@@ -368,6 +387,11 @@ async def _process_snooze(draft_id: uuid.UUID, message_ts: str, duration: str) -
 
             if not draft:
                 logger.error(f"Draft {draft_id} not found for snooze")
+                slack_bot = get_slack_bot()
+                await slack_bot.remove_buttons(
+                    message_ts=message_ts,
+                    final_text="Error: Draft not found. It may have been deleted."
+                )
                 return
 
             draft.status = DraftStatus.SNOOZED
@@ -418,6 +442,10 @@ async def _process_modal_submit(draft_id: uuid.UUID, edited_text: str) -> None:
 
             if not draft:
                 logger.error(f"Draft {draft_id} not found for modal submit")
+                slack_bot = get_slack_bot()
+                await slack_bot.send_confirmation(
+                    "Error: Draft not found. It may have been deleted."
+                )
                 return
 
             conversation = draft.conversation
