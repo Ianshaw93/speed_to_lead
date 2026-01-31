@@ -1,22 +1,41 @@
 """FastAPI application entry point."""
 
 import logging
+import sys
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
-from sqlalchemy import select
-
-from app.config import settings
-from app.database import async_session_factory
-from app.models import Conversation, Draft, DraftStatus, MessageDirection, MessageLog
-from app.schemas import HeyReachWebhookPayload, HealthResponse
-from app.services.deepseek import generate_reply_draft
-from app.services.slack import SlackBot
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging early
+logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger(__name__)
+
+logger.info("Starting app import...")
+
+try:
+    from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+    from sqlalchemy import select
+    logger.info("FastAPI and SQLAlchemy imported")
+
+    from app.config import settings
+    logger.info(f"Settings loaded, database_url starts with: {settings.database_url[:20]}...")
+
+    from app.database import async_session_factory
+    logger.info("Database session factory created")
+
+    from app.models import Conversation, Draft, DraftStatus, MessageDirection, MessageLog
+    logger.info("Models imported")
+
+    from app.schemas import HeyReachWebhookPayload, HealthResponse
+    logger.info("Schemas imported")
+
+    from app.services.deepseek import generate_reply_draft
+    from app.services.slack import SlackBot
+    logger.info("Services imported")
+except Exception as e:
+    logger.error(f"Import failed: {e}", exc_info=True)
+    raise
+
+logger.info("All imports successful")
 
 
 @asynccontextmanager
