@@ -94,6 +94,16 @@ class MessageLogResponse(MessageLogBase):
 
 
 # HeyReach webhook schemas
+class HeyReachList(BaseModel):
+    """A list the lead belongs to in HeyReach."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: int | None = None
+    name: str | None = None
+    custom_fields: dict[str, Any] | None = None
+
+
 class HeyReachLead(BaseModel):
     """Lead information from HeyReach webhook."""
 
@@ -109,6 +119,21 @@ class HeyReachLead(BaseModel):
     profile_url: str | None = None
     position: str | None = None
     location: str | None = None
+    summary: str | None = None
+    about: str | None = None
+    enriched_email: str | None = None
+    custom_email: str | None = None
+    tags: list[str] | None = None
+    lists: list[HeyReachList] | None = None
+
+    @property
+    def personalized_message(self) -> str | None:
+        """Get personalized_message from the first list's custom_fields."""
+        if self.lists:
+            for lst in self.lists:
+                if lst.custom_fields and "personalized_message" in lst.custom_fields:
+                    return lst.custom_fields["personalized_message"]
+        return None
 
 
 class HeyReachMessage(BaseModel):

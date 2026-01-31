@@ -241,3 +241,121 @@ class TestHealthResponse:
         )
         assert data.status == "healthy"
         assert data.environment == "production"
+
+
+class TestHeyReachLeadAllFields:
+    """Tests to ensure HeyReachLead schema includes all fields from HeyReach webhooks."""
+
+    def test_lead_extended_fields(self):
+        """Should parse all lead fields including summary, about, tags, and lists."""
+        payload = {
+            "recent_messages": [
+                {"creation_time": "2026-01-31T16:22:24Z", "message": "Hi"}
+            ],
+            "conversation_id": "conv_123",
+            "sender": {"id": 123},
+            "lead": {
+                "id": "TestId",
+                "full_name": "John Doe",
+                "first_name": "John",
+                "last_name": "Doe",
+                "profile_url": "https://www.linkedin.com/in/johndoe",
+                "location": "Miami, Florida, US",
+                "summary": "Test Summary",
+                "company_url": "https://example.com/",
+                "company_name": "Test Company Name",
+                "position": "CEO at Test",
+                "about": "Test About",
+                "email_address": "johndoe@test.com",
+                "enriched_email": None,
+                "custom_email": None,
+                "tags": ["TagTest"],
+                "lists": [
+                    {
+                        "name": "My List 1",
+                        "id": 123,
+                        "custom_fields": {
+                            "Favorite_cookie": "Chocolate chip",
+                            "Gender": "Male"
+                        }
+                    }
+                ]
+            }
+        }
+
+        data = HeyReachWebhookPayload(**payload)
+
+        # Verify extended lead fields are parsed
+        assert data.lead.summary == "Test Summary"
+        assert data.lead.about == "Test About"
+        assert data.lead.enriched_email is None
+        assert data.lead.custom_email is None
+        assert data.lead.tags == ["TagTest"]
+        assert len(data.lead.lists) == 1
+        assert data.lead.lists[0].name == "My List 1"
+        assert data.lead.lists[0].id == 123
+        assert data.lead.lists[0].custom_fields["Favorite_cookie"] == "Chocolate chip"
+
+    def test_lead_personalized_message_helper_property(self):
+        """Should access personalized_message via helper property."""
+        payload = {
+            "recent_messages": [
+                {"creation_time": "2026-01-31T16:22:24Z", "message": "Hi"}
+            ],
+            "conversation_id": "conv_123",
+            "sender": {"id": 123},
+            "lead": {
+                "full_name": "Jane Smith",
+                "lists": [
+                    {
+                        "name": "Outreach List",
+                        "id": 456,
+                        "custom_fields": {
+                            "personalized_message": "Hey Jane, saw your work at Acme - impressive stuff!"
+                        }
+                    }
+                ]
+            }
+        }
+
+        data = HeyReachWebhookPayload(**payload)
+
+        # Access via helper property
+        assert data.lead.personalized_message == "Hey Jane, saw your work at Acme - impressive stuff!"
+
+    def test_lead_personalized_message_returns_none_when_missing(self):
+        """Should return None when personalized_message is not in custom_fields."""
+        payload = {
+            "recent_messages": [
+                {"creation_time": "2026-01-31T16:22:24Z", "message": "Hi"}
+            ],
+            "conversation_id": "conv_123",
+            "sender": {"id": 123},
+            "lead": {
+                "full_name": "No Message Lead",
+                "lists": [
+                    {
+                        "name": "Some List",
+                        "id": 789,
+                        "custom_fields": {"other_field": "value"}
+                    }
+                ]
+            }
+        }
+
+        data = HeyReachWebhookPayload(**payload)
+        assert data.lead.personalized_message is None
+
+    def test_lead_personalized_message_no_lists(self):
+        """Should return None when lead has no lists."""
+        payload = {
+            "recent_messages": [
+                {"creation_time": "2026-01-31T16:22:24Z", "message": "Hi"}
+            ],
+            "conversation_id": "conv_123",
+            "sender": {"id": 123},
+            "lead": {"full_name": "No Lists Lead"}
+        }
+
+        data = HeyReachWebhookPayload(**payload)
+        assert data.lead.personalized_message is None
