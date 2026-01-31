@@ -164,11 +164,14 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
             print(f"Generated draft: {ai_draft[:100]}...", flush=True)
             logger.info(f"Generated draft: {ai_draft[:100]}...")
 
-            # 4. Send draft to Slack for approval
+            # 4. Pre-generate draft ID so Slack buttons have correct ID
+            draft_id = uuid.uuid4()
+
+            # 5. Send draft to Slack for approval
             print("Sending to Slack...", flush=True)
             slack_bot = SlackBot()
             slack_ts = await slack_bot.send_draft_notification(
-                draft_id=str(uuid.uuid4()),  # Temporary, will update after creating draft
+                draft_id=str(draft_id),
                 lead_name=payload.lead_name,
                 lead_title=None,  # Not in payload
                 lead_company=payload.lead_company,
@@ -179,8 +182,9 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
             print(f"Slack notification sent, ts: {slack_ts}", flush=True)
             logger.info(f"Sent Slack notification, ts: {slack_ts}")
 
-            # 5. Store draft with pending status
+            # 6. Store draft with the same ID used in Slack buttons
             draft = Draft(
+                id=draft_id,
                 conversation_id=conversation.id,
                 status=DraftStatus.PENDING,
                 ai_draft=ai_draft,
