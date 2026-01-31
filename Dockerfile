@@ -18,7 +18,7 @@ RUN mkdir -p app && touch app/__init__.py
 RUN pip install --no-cache-dir .
 
 # Now copy the actual source code (this layer changes frequently)
-# Cache bust: 2026-01-30-v4
+# Cache bust: 2026-01-31-v1
 COPY app/ app/
 COPY alembic/ alembic/
 COPY alembic.ini .
@@ -30,4 +30,4 @@ EXPOSE 8000
 ENV PYTHONUNBUFFERED=1
 
 # Run migrations then start the application
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --log-level info"]
+CMD ["sh", "-c", "echo '=== RUNNING ALEMBIC MIGRATIONS ===' && alembic upgrade head && echo '=== MIGRATIONS COMPLETE ===' && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --log-level info"]
