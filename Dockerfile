@@ -26,5 +26,8 @@ COPY alembic.ini .
 # Expose port
 EXPOSE 8000
 
-# Run the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Set unbuffered output
+ENV PYTHONUNBUFFERED=1
+
+# Run migrations then start the application
+CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --log-level info"]
