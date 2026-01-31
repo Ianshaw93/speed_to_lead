@@ -82,7 +82,11 @@ class Draft(Base):
         index=True,
     )
     status: Mapped[DraftStatus] = mapped_column(
-        Enum(DraftStatus, name="draft_status"),
+        Enum(
+            DraftStatus,
+            name="draft_status",
+            values_callable=lambda x: [e.value for e in x],
+        ),
         default=DraftStatus.PENDING,
     )
     ai_draft: Mapped[str] = mapped_column(Text)
@@ -119,7 +123,11 @@ class MessageLog(Base):
         index=True,
     )
     direction: Mapped[MessageDirection] = mapped_column(
-        Enum(MessageDirection, name="message_direction"),
+        Enum(
+            MessageDirection,
+            name="message_direction",
+            values_callable=lambda x: [e.value for e in x],
+        ),
     )
     content: Mapped[str] = mapped_column(Text)
     sent_at: Mapped[datetime] = mapped_column(
