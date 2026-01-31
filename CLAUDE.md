@@ -52,22 +52,59 @@ Follow this end-to-end workflow for all changes:
 - This triggers automatic deployment to Railway
 
 #### 4. Monitor Deployment
-- Wait ~30 seconds, then check build logs using `railway logs`
-- Wait ~90 seconds total for deployment to complete
-- Watch for any build or startup errors in the logs
+**IMPORTANT: Monitor immediately as it builds - don't wait 60+ seconds!**
+- After pushing, wait 5-10 seconds then start checking
+- Get deployment status: `cmd.exe /c "railway deployment list"` (check every 10-15 seconds)
+- Check build/deploy logs as soon as DEPLOYING: `cmd.exe /c "railway logs --deployment <deployment_id>"`
+- Watch for build errors and healthcheck results in real-time
 
 #### 5. Verify Deployment
-- Check Railway project logs for application errors
-- Hit the `/health` endpoint to verify the service is running
+- Confirm deployment status is SUCCESS: `cmd.exe /c "railway deployment list"`
+- Hit the `/health` endpoint: `curl https://speedtolead-production.up.railway.app/health`
+- Use Railway MCP server's `get-logs` for runtime logs if needed
 - Test any new endpoints or functionality in production
+
+### Railway MCP Server
+
+This project has the Railway MCP server configured. Use it for:
+- `get-logs` - Retrieve service logs (preferred method)
+- `list-projects` - List Railway projects
+- `list-services` - List services in a project
+- `list-variables` - Get environment variables
+- `deploy` - Deploy changes
 
 ### Railway CLI Commands
 
-- `railway logs` - View recent deployment logs
-- `railway logs --follow` - Stream logs in real-time
-- `railway status` - Check deployment status
-- `railway variables` - List environment variables
-- `railway run <command>` - Run a command with Railway environment variables
+**IMPORTANT: Git Bash Compatibility**
+
+Railway CLI does not output properly in Git Bash. Always use `cmd.exe /c` to run Railway commands:
+```bash
+cmd.exe /c "railway deployment list"
+cmd.exe /c "railway logs --build --lines 100 <deployment_id>"
+```
+
+**Working Commands:**
+- `cmd.exe /c "railway status"` - Check current project/service link
+- `cmd.exe /c "railway deployment list"` - List recent deployments with IDs and status
+- `cmd.exe /c "railway logs --build --lines N <deployment_id>"` - View build logs
+- `cmd.exe /c "railway logs --build --json --lines N <deployment_id>"` - Build logs in JSON format
+- `cmd.exe /c "railway variables"` - List environment variables
+- `cmd.exe /c "railway redeploy --yes"` - Trigger a redeploy
+- `cmd.exe /c "railway variable set KEY=VALUE"` - Set environment variable
+
+**Log Commands (Correct Syntax):**
+```bash
+# Build logs (these work reliably)
+cmd.exe /c "railway logs --build --lines 100 <deployment_id>"
+
+# Get deployment ID first
+cmd.exe /c "railway deployment list"
+
+# Runtime logs (may be empty if app doesn't log to stdout)
+cmd.exe /c "railway logs --lines 50 --since 1h"
+```
+
+**Note:** The `-f` flag is for `--filter`, NOT for follow/streaming. Streaming is the default behavior without `--lines`/`--since`/`--until`.
 
 ### Health Check
 
@@ -78,19 +115,39 @@ curl https://<railway-url>/health
 
 ### Troubleshooting Deployment Failures
 
-**IMPORTANT**: When deployments fail, always check the **deploy logs** (not just build logs):
+**Step 1: Get deployment ID and status**
+```bash
+cmd.exe /c "railway deployment list"
+```
 
-1. **Build logs** show if the Docker image was built successfully
-2. **Deploy logs** show what happens when the container starts - this is where startup crashes appear
+**Step 2: Check build logs** (these reliably work)
+```bash
+cmd.exe /c "railway logs --build --lines 100 <deployment_id>"
+```
 
-Common issues to look for in deploy logs:
-- Import errors (missing dependencies)
-- Environment variable issues (e.g., `${PORT:-8000}` not interpreted - needs `sh -c` wrapper)
-- Database connection failures
-- Missing required config
+**Step 3: Check runtime logs** (use MCP server if CLI returns empty)
+```bash
+# Try CLI first
+cmd.exe /c "railway logs --lines 50 --since 10m"
 
-If the Railway CLI isn't working or isn't linked to the project:
-1. Ask the user to run `railway login` and `railway link` to connect the CLI
-2. Fallback: Ask the user to check the Railway dashboard for deploy logs
+# If empty, use MCP server's get-logs tool
+```
+
+**Common Issues:**
+- Build failures: Check `--build` logs for pip/docker errors
+- Startup crashes: Look for import errors, missing env vars in build logs after "Healthcheck" section
+- If healthcheck fails, the error appears in build logs
+- Runtime logs may be empty if app doesn't flush stdout (PYTHONUNBUFFERED=1 is set)
+
+**If Railway CLI isn't working:**
+1. Make sure you're using `cmd.exe /c "railway ..."` (Git Bash doesn't show output otherwise)
+2. Run `cmd.exe /c "railway login"` and `cmd.exe /c "railway link"` to connect
+3. Use Railway MCP server tools as fallback
+4. Check Railway dashboard for deploy logs
 
 **Railway URL**: https://speedtolead-production.up.railway.app
+
+**Project IDs** (for API/debugging):
+- Project: `2956fc54-0e6e-4f35-b6c3-2efe2240d602`
+- Environment: `d8e53f68-c745-4e25-bde6-10a46ac93495`
+- Service: `7cab4889-3675-4ef5-870c-63e803ce7082`

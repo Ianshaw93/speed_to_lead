@@ -18,7 +18,7 @@ RUN mkdir -p app && touch app/__init__.py
 RUN pip install --no-cache-dir .
 
 # Now copy the actual source code (this layer changes frequently)
-# Cache bust: 2026-01-31-v1
+# Cache bust: 2026-01-31-v2
 COPY app/ app/
 COPY alembic/ alembic/
 COPY alembic.ini .
