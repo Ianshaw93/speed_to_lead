@@ -22,7 +22,7 @@ try:
     from app.database import async_session_factory
     logger.info("Database session factory created")
 
-    from app.models import Conversation, Draft, DraftStatus, MessageDirection, MessageLog
+    from app.models import Conversation, Draft, DraftStatus, FunnelStage, MessageDirection, MessageLog, Prospect, ProspectSource
     logger.info("Models imported")
 
     from app.schemas import HeyReachWebhookPayload, HealthResponse
@@ -153,31 +153,38 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
             )
             session.add(message_log)
 
-            # 3. Generate AI draft via DeepSeek
+            # 3. Generate AI draft via DeepSeek (with stage detection)
             print(f"Generating AI draft for conversation {conversation.id}", flush=True)
             logger.info(f"Generating AI draft for conversation {conversation.id}")
-            ai_draft = await generate_reply_draft(
+            draft_result = await generate_reply_draft(
                 lead_name=payload.lead_name,
                 lead_message=payload.latest_message,
                 conversation_history=history,
             )
-            print(f"Generated draft: {ai_draft[:100]}...", flush=True)
-            logger.info(f"Generated draft: {ai_draft[:100]}...")
+            print(f"Detected stage: {draft_result.detected_stage.value}", flush=True)
+            print(f"Generated draft: {draft_result.reply[:100]}...", flush=True)
+            logger.info(f"Detected stage: {draft_result.detected_stage.value}")
+            logger.info(f"Generated draft: {draft_result.reply[:100]}...")
+
+            # Update conversation with detected funnel stage
+            conversation.funnel_stage = draft_result.detected_stage
 
             # 4. Pre-generate draft ID so Slack buttons have correct ID
             draft_id = uuid.uuid4()
 
-            # 5. Send draft to Slack for approval
+            # 5. Send draft to Slack for approval (with stage indicator)
             print("Sending to Slack...", flush=True)
             slack_bot = SlackBot()
             slack_ts = await slack_bot.send_draft_notification(
-                draft_id=str(draft_id),
+                draft_id=draft_id,
                 lead_name=payload.lead_name,
                 lead_title=None,  # Not in payload
                 lead_company=payload.lead_company,
                 linkedin_url=f"https://www.linkedin.com/messaging/thread/{payload.conversation_id}",
                 lead_message=payload.latest_message,
-                ai_draft=ai_draft,
+                ai_draft=draft_result.reply,
+                funnel_stage=draft_result.detected_stage,
+                stage_reasoning=draft_result.stage_reasoning,
             )
             print(f"Slack notification sent, ts: {slack_ts}", flush=True)
             logger.info(f"Sent Slack notification, ts: {slack_ts}")
@@ -187,10 +194,28 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
                 id=draft_id,
                 conversation_id=conversation.id,
                 status=DraftStatus.PENDING,
-                ai_draft=ai_draft,
+                ai_draft=draft_result.reply,
                 slack_message_ts=slack_ts,
             )
             session.add(draft)
+
+            # 7. Link prospect to conversation (if exists)
+            # Try to find by lead's LinkedIn URL from payload
+            lead_profile_url = payload.lead.profile_url if payload.lead else None
+            if lead_profile_url:
+                normalized_url = lead_profile_url.lower().strip().rstrip("/")
+                if "?" in normalized_url:
+                    normalized_url = normalized_url.split("?")[0]
+
+                prospect_result = await session.execute(
+                    select(Prospect).where(Prospect.linkedin_url == normalized_url)
+                )
+                prospect = prospect_result.scalar_one_or_none()
+
+                if prospect and not prospect.conversation_id:
+                    prospect.conversation_id = conversation.id
+                    logger.info(f"Linked prospect {prospect.id} to conversation {conversation.id}")
+
             await session.commit()
 
             logger.info(f"Created draft {draft.id} for conversation {conversation.id}")
@@ -259,4 +284,251 @@ async def heyreach_webhook(
             "status": "received_raw",
             "message": "Payload logged for analysis",
             "keys": list(data.keys()) if isinstance(data, dict) else "not a dict",
+        }
+
+
+# =============================================================================
+# PROSPECTS API - For tracking all outreach prospects
+# =============================================================================
+
+def normalize_linkedin_url(url: str) -> str:
+    """Normalize LinkedIn URL for consistent matching."""
+    if not url:
+        return ""
+    url = url.lower().strip().rstrip("/")
+    # Remove query params
+    if "?" in url:
+        url = url.split("?")[0]
+    return url
+
+
+@app.post("/api/prospects")
+async def register_prospects(request: Request) -> dict:
+    """Register prospects sent to HeyReach.
+
+    Called by multichannel-outreach after uploading to HeyReach.
+    Accepts a list of prospects with their metadata.
+    """
+    try:
+        data = await request.json()
+        prospects_data = data.get("prospects", [])
+        source_type = data.get("source_type", "other")
+        source_keyword = data.get("source_keyword")
+        heyreach_list_id = data.get("heyreach_list_id")
+
+        if not prospects_data:
+            return {"status": "error", "message": "No prospects provided"}
+
+        async with async_session_factory() as session:
+            created = 0
+            updated = 0
+            errors = []
+
+            for p in prospects_data:
+                linkedin_url = normalize_linkedin_url(
+                    p.get("linkedinUrl") or p.get("linkedin_url") or p.get("profileUrl") or ""
+                )
+
+                if not linkedin_url:
+                    errors.append(f"Missing LinkedIn URL for {p.get('fullName', 'Unknown')}")
+                    continue
+
+                # Check if prospect exists
+                result = await session.execute(
+                    select(Prospect).where(Prospect.linkedin_url == linkedin_url)
+                )
+                existing = result.scalar_one_or_none()
+
+                if existing:
+                    # Update with new outreach data
+                    existing.personalized_message = p.get("personalized_message") or existing.personalized_message
+                    existing.heyreach_list_id = heyreach_list_id or existing.heyreach_list_id
+                    if heyreach_list_id:
+                        from datetime import datetime, timezone
+                        existing.heyreach_uploaded_at = datetime.now(timezone.utc)
+                    updated += 1
+                else:
+                    # Create new prospect
+                    from datetime import datetime, timezone
+                    # Parse dates if provided
+                    post_date = None
+                    scraped_at = None
+                    if p.get("post_date"):
+                        try:
+                            post_date = datetime.fromisoformat(p["post_date"].replace("Z", "+00:00"))
+                        except:
+                            pass
+                    if p.get("scraped_at"):
+                        try:
+                            scraped_at = datetime.fromisoformat(p["scraped_at"].replace("Z", "+00:00"))
+                        except:
+                            pass
+
+                    prospect = Prospect(
+                        linkedin_url=linkedin_url,
+                        full_name=p.get("fullName") or p.get("full_name"),
+                        first_name=p.get("firstName") or p.get("first_name"),
+                        last_name=p.get("lastName") or p.get("last_name"),
+                        job_title=p.get("jobTitle") or p.get("job_title") or p.get("position"),
+                        company_name=p.get("companyName") or p.get("company_name") or p.get("company"),
+                        company_industry=p.get("companyIndustry") or p.get("company_industry"),
+                        location=p.get("addressWithCountry") or p.get("location"),
+                        headline=p.get("headline"),
+                        source_type=ProspectSource(source_type) if source_type in [e.value for e in ProspectSource] else ProspectSource.OTHER,
+                        source_keyword=source_keyword or p.get("source_keyword"),
+                        source_post_url=p.get("source_post_url"),
+                        engagement_type=p.get("engagement_type"),
+                        post_date=post_date,
+                        scraped_at=scraped_at or datetime.now(timezone.utc),
+                        personalized_message=p.get("personalized_message"),
+                        icp_match=p.get("icp_match"),
+                        icp_reason=p.get("icp_reason"),
+                        heyreach_list_id=heyreach_list_id,
+                        heyreach_uploaded_at=datetime.now(timezone.utc) if heyreach_list_id else None,
+                    )
+                    session.add(prospect)
+                    created += 1
+
+            await session.commit()
+
+            return {
+                "status": "ok",
+                "created": created,
+                "updated": updated,
+                "errors": errors[:10] if errors else [],
+            }
+
+    except Exception as e:
+        logger.error(f"Error registering prospects: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/prospects/backfill")
+async def backfill_prospects(request: Request) -> dict:
+    """Backfill prospects from JSON data.
+
+    Accepts a list of prospects with full metadata for bulk import.
+    Used by multichannel-outreach to sync historical data.
+    """
+    try:
+        data = await request.json()
+        prospects_data = data.get("prospects", [])
+
+        if not prospects_data:
+            return {"status": "error", "message": "No prospects provided"}
+
+        async with async_session_factory() as session:
+            created = 0
+            skipped = 0
+
+            for p in prospects_data:
+                linkedin_url = normalize_linkedin_url(
+                    p.get("linkedin_url") or p.get("linkedinUrl") or p.get("profileUrl") or ""
+                )
+
+                if not linkedin_url:
+                    continue
+
+                # Check if exists
+                result = await session.execute(
+                    select(Prospect).where(Prospect.linkedin_url == linkedin_url)
+                )
+                if result.scalar_one_or_none():
+                    skipped += 1
+                    continue
+
+                source_type_str = p.get("source_type", "other")
+                try:
+                    source_type = ProspectSource(source_type_str)
+                except ValueError:
+                    source_type = ProspectSource.OTHER
+
+                from datetime import datetime, timezone
+                prospect = Prospect(
+                    linkedin_url=linkedin_url,
+                    full_name=p.get("full_name") or p.get("fullName"),
+                    first_name=p.get("first_name") or p.get("firstName"),
+                    last_name=p.get("last_name") or p.get("lastName"),
+                    job_title=p.get("job_title") or p.get("jobTitle"),
+                    company_name=p.get("company_name") or p.get("companyName"),
+                    company_industry=p.get("company_industry") or p.get("companyIndustry"),
+                    location=p.get("location") or p.get("addressWithCountry"),
+                    headline=p.get("headline"),
+                    source_type=source_type,
+                    source_keyword=p.get("source_keyword"),
+                    source_post_url=p.get("source_post_url"),
+                    personalized_message=p.get("personalized_message"),
+                    icp_match=p.get("icp_match"),
+                    icp_reason=p.get("icp_reason"),
+                    heyreach_list_id=p.get("heyreach_list_id"),
+                    heyreach_uploaded_at=datetime.now(timezone.utc) if p.get("heyreach_list_id") else None,
+                )
+                session.add(prospect)
+                created += 1
+
+            await session.commit()
+
+            # Link to conversations
+            linked = 0
+            convos_result = await session.execute(select(Conversation))
+            conversations = convos_result.scalars().all()
+
+            for convo in conversations:
+                convo_url = normalize_linkedin_url(convo.linkedin_profile_url or "")
+                if not convo_url or "linkedin://conversation/" in convo_url:
+                    continue
+
+                result = await session.execute(
+                    select(Prospect).where(
+                        Prospect.linkedin_url == convo_url,
+                        Prospect.conversation_id.is_(None)
+                    )
+                )
+                prospect = result.scalar_one_or_none()
+                if prospect:
+                    prospect.conversation_id = convo.id
+                    linked += 1
+
+            await session.commit()
+
+            return {
+                "status": "ok",
+                "created": created,
+                "skipped": skipped,
+                "linked_to_conversations": linked,
+            }
+
+    except Exception as e:
+        logger.error(f"Error in backfill: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/prospects/stats")
+async def prospects_stats() -> dict:
+    """Get prospect statistics."""
+    from sqlalchemy import func
+
+    async with async_session_factory() as session:
+        # Total prospects
+        total = await session.execute(select(func.count(Prospect.id)))
+        total_count = total.scalar()
+
+        # By source
+        by_source = await session.execute(
+            select(Prospect.source_type, func.count(Prospect.id))
+            .group_by(Prospect.source_type)
+        )
+        source_counts = {str(row[0].value): row[1] for row in by_source}
+
+        # With conversations (replied)
+        with_convo = await session.execute(
+            select(func.count(Prospect.id)).where(Prospect.conversation_id.isnot(None))
+        )
+        replied_count = with_convo.scalar()
+
+        return {
+            "total": total_count,
+            "by_source": source_counts,
+            "replied": replied_count,
+            "reply_rate": f"{(replied_count / total_count * 100):.1f}%" if total_count > 0 else "0%",
         }

@@ -33,6 +33,28 @@ class MessageDirection(str, enum.Enum):
     OUTBOUND = "outbound"
 
 
+class FunnelStage(str, enum.Enum):
+    """Sales funnel stage for a conversation."""
+
+    INITIATED = "initiated"  # We sent outreach, no reply yet
+    POSITIVE_REPLY = "positive_reply"  # Lead replied to initial message/follow-ups
+    PITCHED = "pitched"  # After we invite them to schedule a call
+    CALENDAR_SENT = "calendar_sent"  # They agreed to meet, we sent calendar link
+    BOOKED = "booked"  # They booked into calendar
+    REGENERATION = "regeneration"  # Re-engaging after drop-off
+
+
+class ProspectSource(str, enum.Enum):
+    """Source of a prospect."""
+
+    COMPETITOR_POST = "competitor_post"  # From competitor LinkedIn post engagers
+    COLD_OUTREACH = "cold_outreach"  # From cold outreach keyword search
+    SALES_NAV = "sales_nav"  # From LinkedIn Sales Navigator
+    VAYNE = "vayne"  # From Vayne leads
+    MANUAL = "manual"  # Manually added
+    OTHER = "other"
+
+
 class Conversation(Base):
     """A LinkedIn conversation with a lead."""
 
@@ -51,6 +73,14 @@ class Conversation(Base):
     conversation_history: Mapped[list[dict[str, Any]] | None] = mapped_column(
         JSON,
         default=list,
+        nullable=True,
+    )
+    funnel_stage: Mapped[FunnelStage | None] = mapped_column(
+        Enum(
+            FunnelStage,
+            name="funnel_stage",
+            values_callable=lambda x: [e.value for e in x],
+        ),
         nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(
@@ -137,3 +167,79 @@ class MessageLog(Base):
 
     # Relationships
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")
+
+
+class Prospect(Base):
+    """A prospect scraped and sent to HeyReach for outreach.
+
+    Tracks the full lifecycle: scraped -> sent to HeyReach -> replied -> conversation.
+    """
+
+    __tablename__ = "prospects"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    # LinkedIn identifier - unique, used to link to conversations
+    linkedin_url: Mapped[str] = mapped_column(String(500), unique=True, index=True)
+
+    # Lead info
+    full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    first_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    last_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    job_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    company_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    company_industry: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    location: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    headline: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Source tracking
+    source_type: Mapped[ProspectSource] = mapped_column(
+        Enum(
+            ProspectSource,
+            name="prospect_source",
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        default=ProspectSource.OTHER,
+    )
+    source_keyword: Mapped[str | None] = mapped_column(String(255), nullable=True)  # e.g., "ceo", "cold outreach"
+    source_post_url: Mapped[str | None] = mapped_column(String(500), nullable=True)  # LinkedIn post they engaged with
+
+    # Engagement context
+    engagement_type: Mapped[str | None] = mapped_column(String(50), nullable=True)  # LIKE, INTEREST, CELEBRATE, etc.
+    engagement_comment: Mapped[str | None] = mapped_column(Text, nullable=True)  # Their comment if applicable
+    post_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)  # When the post was made
+    scraped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)  # When we scraped them
+
+    # Outreach data
+    personalized_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    icp_match: Mapped[bool | None] = mapped_column(nullable=True)
+    icp_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # HeyReach tracking
+    heyreach_list_id: Mapped[int | None] = mapped_column(nullable=True)
+    heyreach_uploaded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Link to conversation (when they reply)
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id"),
+        nullable=True,
+        index=True,
+    )
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    # Relationships
+    conversation: Mapped["Conversation | None"] = relationship()
