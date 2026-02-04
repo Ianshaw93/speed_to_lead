@@ -152,16 +152,22 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
                 for msg in payload.all_recent_messages
             ]
 
+            # Get real LinkedIn profile URL from payload
+            profile_url = payload.linkedin_profile_url or f"linkedin://conversation/{payload.conversation_id}"
+
             if conversation:
                 # Update existing conversation
                 conversation.conversation_history = history
                 conversation.linkedin_account_id = payload.linkedin_account_id
+                # Update profile URL if we now have the real one
+                if payload.linkedin_profile_url and "linkedin://conversation/" in (conversation.linkedin_profile_url or ""):
+                    conversation.linkedin_profile_url = payload.linkedin_profile_url
                 logger.info(f"Updated conversation {conversation.id}")
             else:
                 # Create new conversation
                 conversation = Conversation(
                     heyreach_lead_id=payload.conversation_id,
-                    linkedin_profile_url=f"linkedin://conversation/{payload.conversation_id}",
+                    linkedin_profile_url=profile_url,
                     lead_name=payload.lead_name,
                     linkedin_account_id=payload.linkedin_account_id,
                     conversation_history=history,

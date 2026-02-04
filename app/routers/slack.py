@@ -121,13 +121,19 @@ async def add_prospect_to_follow_up_list(
             "custom_fields": custom_fields,
         }
 
-        await heyreach.add_leads_to_list(
+        logger.info(
+            f"Adding to HeyReach list {HEYREACH_FOLLOW_UP_LIST_ID}: "
+            f"linkedin_url={conversation.linkedin_profile_url}, "
+            f"name={first_name} {last_name}, "
+            f"custom_fields={list(custom_fields.keys())}"
+        )
+
+        result = await heyreach.add_leads_to_list(
             list_id=HEYREACH_FOLLOW_UP_LIST_ID,
             leads=[lead_data],
         )
         logger.info(
-            f"Added prospect {conversation.lead_name} to follow-up list "
-            f"{HEYREACH_FOLLOW_UP_LIST_ID}"
+            f"HeyReach response for {conversation.lead_name}: {result}"
         )
 
     except HeyReachError as e:
