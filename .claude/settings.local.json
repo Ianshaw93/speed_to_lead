@@ -17,23 +17,45 @@
       "Bash(railway help:*)",
       "Bash(git push:*)",
       "WebFetch(domain:docs.railway.com)",
-      "Bash(script -q -c \"railway logs --tail 50\" /dev/null)",
-      "Bash(tee:*)",
-      "Bash(cmd //c \"railway logs --tail 50\":*)",
       "Bash(railway:*)",
-      "Bash(where railway:*)",
-      "Bash(cmd //c \"railway logs -d --tail 50\")",
-      "Bash(cmd //c \"railway logs --tail 30\")",
-      "Bash(cmd //c \"railway status\")",
-      "Bash(cmd //c \"railway domain\")",
       "Bash(curl:*)",
-      "Bash(cmd //c \"railway logs --tail 30 2>&1\":*)",
-      "Bash(cmd //c \"railway status 2>&1\")",
-      "Bash(cmd //c \"railway domain 2>&1\")",
-      "Bash(cmd //c \"railway logs --tail 50 2>&1\")",
-      "Bash(cmd //c \"railway logs 2>&1\")",
-      "Bash(cmd //c:*)",
-      "Bash(find:*)"
+      "Bash(python:*)",
+      "Bash(cmd.exe /c \"railway:*)",
+      "Bash(cmd.exe /c \"railway deployment list\")",
+      "Bash(cmd.exe /c \"railway logs --deployment ac774e9c-73e3-4686-95d0-ad251e51c02f\")",
+      "Bash(cmd.exe /c \"railway logs --build --deployment ac774e9c-73e3-4686-95d0-ad251e51c02f\")",
+      "Bash(cmd.exe /c \"railway logs\")",
+      "Bash(cmd.exe /c \"railway logs --lines 50 --since 2m\")",
+      "Bash(cmd.exe /c \"railway logs --deployment 1f399759-aec1-4368-a160-f54dc22db50e\")",
+      "Bash(cmd.exe /c \"railway link --project smiths-li-fastapi --service speed_to_lead\")",
+      "Bash(cmd.exe /c \"railway logs --build --lines 50 cd32bd9a-7614-4b31-b76f-d16adb419fa8\")",
+      "Bash(cmd.exe /c \"railway logs --lines 100\")",
+      "Bash(cmd.exe /c \"railway logs --build --lines 60 230d8d96-a079-4122-8125-26fa7878041a\")",
+      "Bash(cmd.exe /c \"railway logs --lines 30\")",
+      "Bash(cmd.exe /c \"railway logs --lines 40\")",
+      "Bash(cmd.exe /c \"railway logs --lines 15\")",
+      "Bash(cmd.exe /c \"railway logs --lines 20\")",
+      "Bash(cmd.exe /c \"railway logs --lines 10\")",
+      "Bash(cmd.exe /c \"railway logs --lines 50\")",
+      "WebFetch(domain:karozieminski.substack.com)",
+      "WebFetch(domain:www.anthropic.com)",
+      "Bash(pytest:*)",
+      "Bash(cmd.exe /c \"railway logs --build --lines 50 f0980c37-9b1f-4191-b5be-f18eb6271451\")",
+      "Bash(chmod:*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/pre-commit-check.sh",
+            "timeout": 120000
+          }
+        ]
+      }
     ]
   }
 }

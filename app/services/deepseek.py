@@ -1,15 +1,32 @@
-"""DeepSeek AI client for generating LinkedIn reply drafts."""
+"""DeepSeek AI client for generating LinkedIn reply drafts with stage detection."""
+
+import json
+from dataclasses import dataclass
 
 from openai import AsyncOpenAI
 
 from app.config import settings
-from app.prompts.sales_assistant import SYSTEM_PROMPT, build_user_prompt
+from app.models import FunnelStage
+from app.prompts.stage_detector import (
+    STAGE_DETECTION_SYSTEM_PROMPT,
+    build_stage_detection_prompt,
+)
+from app.prompts.stages import get_stage_prompt
 
 
 class DeepSeekError(Exception):
     """Custom exception for DeepSeek API errors."""
 
     pass
+
+
+@dataclass
+class DraftResult:
+    """Result from draft generation including detected stage."""
+
+    detected_stage: FunnelStage
+    stage_reasoning: str
+    reply: str
 
 
 class DeepSeekClient:
@@ -33,29 +50,105 @@ class DeepSeekClient:
             base_url=settings.deepseek_base_url,
         )
 
-    async def generate_draft(
+    async def detect_stage(
         self,
         lead_name: str,
         lead_message: str,
         conversation_history: list[dict] | None = None,
-        guidance: str | None = None,
-    ) -> str:
-        """Generate a draft reply using DeepSeek.
+    ) -> tuple[FunnelStage, str]:
+        """Detect the funnel stage from conversation.
 
         Args:
             lead_name: Name of the lead.
             lead_message: The lead's most recent message.
             conversation_history: Previous messages in the conversation.
+
+        Returns:
+            Tuple of (FunnelStage, reasoning string).
+        """
+        try:
+            user_prompt = build_stage_detection_prompt(
+                lead_name=lead_name,
+                lead_message=lead_message,
+                conversation_history=conversation_history,
+            )
+
+            messages = [
+                {"role": "system", "content": STAGE_DETECTION_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ]
+
+            completion = await self._client.chat.completions.create(
+                model=self._model,
+                messages=messages,
+                max_tokens=200,
+                temperature=0.3,  # Lower temperature for more consistent stage detection
+            )
+
+            if not completion.choices:
+                return FunnelStage.POSITIVE_REPLY, "Fallback: empty response"
+
+            content = completion.choices[0].message.content
+            return self._parse_stage_response(content)
+
+        except Exception as e:
+            # Fallback on any error
+            return FunnelStage.POSITIVE_REPLY, f"Fallback due to error: {e}"
+
+    def _parse_stage_response(self, content: str) -> tuple[FunnelStage, str]:
+        """Parse the JSON response from stage detection.
+
+        Args:
+            content: Raw response content from LLM.
+
+        Returns:
+            Tuple of (FunnelStage, reasoning string).
+        """
+        try:
+            data = json.loads(content)
+            stage_str = data.get("detected_stage", "positive_reply")
+            reasoning = data.get("reasoning", "")
+
+            # Try to match the stage string to enum
+            try:
+                stage = FunnelStage(stage_str)
+            except ValueError:
+                stage = FunnelStage.POSITIVE_REPLY
+                reasoning = f"Fallback from unknown stage '{stage_str}': {reasoning}"
+
+            return stage, reasoning
+
+        except json.JSONDecodeError:
+            return FunnelStage.POSITIVE_REPLY, "Fallback: could not parse JSON response"
+
+    async def generate_with_stage(
+        self,
+        lead_name: str,
+        lead_message: str,
+        stage: FunnelStage,
+        conversation_history: list[dict] | None = None,
+        guidance: str | None = None,
+    ) -> str:
+        """Generate a reply using stage-specific prompt.
+
+        Args:
+            lead_name: Name of the lead.
+            lead_message: The lead's most recent message.
+            stage: The detected funnel stage.
+            conversation_history: Previous messages in the conversation.
             guidance: Optional user guidance for regeneration.
 
         Returns:
-            The generated draft reply text.
+            The generated reply text.
 
         Raises:
             DeepSeekError: If the API call fails or returns empty response.
         """
         try:
-            user_prompt = build_user_prompt(
+            # Get the stage-specific prompt module
+            prompt_module = get_stage_prompt(stage)
+
+            user_prompt = prompt_module.build_user_prompt(
                 lead_name=lead_name,
                 lead_message=lead_message,
                 conversation_history=conversation_history,
@@ -63,7 +156,7 @@ class DeepSeekClient:
             )
 
             messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": prompt_module.SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ]
 
@@ -81,8 +174,53 @@ class DeepSeekClient:
 
         except DeepSeekError:
             raise
+        except KeyError as e:
+            raise DeepSeekError(f"No prompt available for stage {stage}: {e}") from e
         except Exception as e:
             raise DeepSeekError(f"DeepSeek API error: {e}") from e
+
+    async def generate_draft(
+        self,
+        lead_name: str,
+        lead_message: str,
+        conversation_history: list[dict] | None = None,
+        guidance: str | None = None,
+    ) -> DraftResult:
+        """Generate a draft reply using two-pass flow: detect stage, then generate.
+
+        Args:
+            lead_name: Name of the lead.
+            lead_message: The lead's most recent message.
+            conversation_history: Previous messages in the conversation.
+            guidance: Optional user guidance for regeneration.
+
+        Returns:
+            DraftResult with detected_stage, stage_reasoning, and reply.
+
+        Raises:
+            DeepSeekError: If the API call fails or returns empty response.
+        """
+        # Pass 1: Detect the funnel stage
+        detected_stage, stage_reasoning = await self.detect_stage(
+            lead_name=lead_name,
+            lead_message=lead_message,
+            conversation_history=conversation_history,
+        )
+
+        # Pass 2: Generate reply using stage-specific prompt
+        reply = await self.generate_with_stage(
+            lead_name=lead_name,
+            lead_message=lead_message,
+            stage=detected_stage,
+            conversation_history=conversation_history,
+            guidance=guidance,
+        )
+
+        return DraftResult(
+            detected_stage=detected_stage,
+            stage_reasoning=stage_reasoning,
+            reply=reply,
+        )
 
 
 # Global client instance
@@ -102,8 +240,8 @@ async def generate_reply_draft(
     lead_message: str,
     conversation_history: list[dict] | None = None,
     guidance: str | None = None,
-) -> str:
-    """Convenience function to generate a reply draft.
+) -> DraftResult:
+    """Convenience function to generate a reply draft with stage detection.
 
     Args:
         lead_name: Name of the lead.
@@ -112,7 +250,7 @@ async def generate_reply_draft(
         guidance: Optional user guidance for regeneration.
 
     Returns:
-        The generated draft reply text.
+        DraftResult with detected_stage, stage_reasoning, and reply.
     """
     client = get_deepseek_client()
     return await client.generate_draft(

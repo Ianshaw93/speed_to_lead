@@ -71,3 +71,38 @@ async def test_client() -> AsyncGenerator[AsyncClient, None]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+
+
+# ============================================================
+# Live API Test Support
+# ============================================================
+
+
+def pytest_addoption(parser):
+    """Add --live option for running tests against real APIs."""
+    parser.addoption(
+        "--live",
+        action="store_true",
+        default=False,
+        help="Run live tests against real APIs (DeepSeek, etc.)",
+    )
+
+
+def pytest_configure(config):
+    """Register the 'live' marker."""
+    config.addinivalue_line(
+        "markers",
+        "live: mark test as requiring live API access (skip unless --live is passed)",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip live tests unless --live flag is passed."""
+    if config.getoption("--live"):
+        # --live given: don't skip live tests
+        return
+
+    skip_live = pytest.mark.skip(reason="Need --live option to run")
+    for item in items:
+        if "live" in item.keywords:
+            item.add_marker(skip_live)

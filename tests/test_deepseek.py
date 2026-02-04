@@ -4,7 +4,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.services.deepseek import DeepSeekClient, DeepSeekError, generate_reply_draft
+from app.models import FunnelStage
+from app.services.deepseek import (
+    DeepSeekClient,
+    DeepSeekError,
+    DraftResult,
+    generate_reply_draft,
+)
 
 
 class TestDeepSeekClient:
@@ -17,9 +23,20 @@ class TestDeepSeekClient:
 
     @pytest.mark.asyncio
     async def test_generate_draft_success(self, client):
-        """Should generate a draft reply using DeepSeek."""
-        mock_completion = MagicMock()
-        mock_completion.choices = [
+        """Should generate a draft reply using DeepSeek with stage detection."""
+        # First call: stage detection
+        stage_completion = MagicMock()
+        stage_completion.choices = [
+            MagicMock(
+                message=MagicMock(
+                    content='{"detected_stage": "positive_reply", "reasoning": "Lead showed interest"}'
+                )
+            )
+        ]
+
+        # Second call: draft generation
+        draft_completion = MagicMock()
+        draft_completion.choices = [
             MagicMock(message=MagicMock(content="Hi John! Thanks for your interest..."))
         ]
 
@@ -28,7 +45,7 @@ class TestDeepSeekClient:
             "create",
             new_callable=AsyncMock,
         ) as mock_create:
-            mock_create.return_value = mock_completion
+            mock_create.side_effect = [stage_completion, draft_completion]
 
             result = await client.generate_draft(
                 lead_name="John Doe",
@@ -36,8 +53,9 @@ class TestDeepSeekClient:
                 conversation_history=[],
             )
 
-            assert "John" in result or "interest" in result.lower()
-            mock_create.assert_called_once()
+            assert isinstance(result, DraftResult)
+            assert "John" in result.reply or "interest" in result.reply.lower()
+            assert mock_create.call_count == 2  # Two calls: stage detection + draft
 
     @pytest.mark.asyncio
     async def test_generate_draft_with_context(self, client):
@@ -145,15 +163,195 @@ class TestDeepSeekClient:
         assert client._model == "custom-model"
 
 
+class TestDraftResult:
+    """Tests for the DraftResult dataclass."""
+
+    def test_draft_result_creation(self):
+        """Should create a DraftResult with all fields."""
+        result = DraftResult(
+            detected_stage=FunnelStage.POSITIVE_REPLY,
+            stage_reasoning="Lead showed interest",
+            reply="Thanks for your interest!",
+        )
+        assert result.detected_stage == FunnelStage.POSITIVE_REPLY
+        assert result.stage_reasoning == "Lead showed interest"
+        assert result.reply == "Thanks for your interest!"
+
+
+class TestStageDetection:
+    """Tests for stage detection functionality."""
+
+    @pytest.fixture
+    def client(self):
+        """Create a DeepSeek client for testing."""
+        return DeepSeekClient(api_key="test_api_key")
+
+    @pytest.mark.asyncio
+    async def test_detect_stage_success(self, client):
+        """Should detect stage from conversation."""
+        mock_completion = MagicMock()
+        mock_completion.choices = [
+            MagicMock(
+                message=MagicMock(
+                    content='{"detected_stage": "positive_reply", "reasoning": "Lead showed interest"}'
+                )
+            )
+        ]
+
+        with patch.object(
+            client._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+        ) as mock_create:
+            mock_create.return_value = mock_completion
+
+            stage, reasoning = await client.detect_stage(
+                lead_name="John",
+                lead_message="Sounds interesting!",
+                conversation_history=[],
+            )
+
+            assert stage == FunnelStage.POSITIVE_REPLY
+            assert "interest" in reasoning.lower()
+
+    @pytest.mark.asyncio
+    async def test_detect_stage_invalid_json_fallback(self, client):
+        """Should fallback to POSITIVE_REPLY for invalid JSON."""
+        mock_completion = MagicMock()
+        mock_completion.choices = [
+            MagicMock(message=MagicMock(content="not valid json"))
+        ]
+
+        with patch.object(
+            client._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+        ) as mock_create:
+            mock_create.return_value = mock_completion
+
+            stage, reasoning = await client.detect_stage(
+                lead_name="John",
+                lead_message="Hello",
+                conversation_history=[],
+            )
+
+            assert stage == FunnelStage.POSITIVE_REPLY
+            assert "fallback" in reasoning.lower() or "parse" in reasoning.lower()
+
+    @pytest.mark.asyncio
+    async def test_detect_stage_unknown_stage_fallback(self, client):
+        """Should fallback to POSITIVE_REPLY for unknown stage."""
+        mock_completion = MagicMock()
+        mock_completion.choices = [
+            MagicMock(
+                message=MagicMock(
+                    content='{"detected_stage": "unknown_stage", "reasoning": "test"}'
+                )
+            )
+        ]
+
+        with patch.object(
+            client._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+        ) as mock_create:
+            mock_create.return_value = mock_completion
+
+            stage, reasoning = await client.detect_stage(
+                lead_name="John",
+                lead_message="Hello",
+                conversation_history=[],
+            )
+
+            assert stage == FunnelStage.POSITIVE_REPLY
+
+
+class TestTwoPassGeneration:
+    """Tests for the two-pass generation flow."""
+
+    @pytest.fixture
+    def client(self):
+        """Create a DeepSeek client for testing."""
+        return DeepSeekClient(api_key="test_api_key")
+
+    @pytest.mark.asyncio
+    async def test_generate_with_stage_uses_stage_prompt(self, client):
+        """Should use the stage-specific prompt for generation."""
+        mock_completion = MagicMock()
+        mock_completion.choices = [
+            MagicMock(message=MagicMock(content="Stage-specific reply"))
+        ]
+
+        with patch.object(
+            client._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+        ) as mock_create:
+            mock_create.return_value = mock_completion
+
+            reply = await client.generate_with_stage(
+                lead_name="John",
+                lead_message="Sounds interesting!",
+                stage=FunnelStage.POSITIVE_REPLY,
+                conversation_history=[],
+            )
+
+            assert reply == "Stage-specific reply"
+            mock_create.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_full_two_pass_flow(self, client):
+        """Should detect stage then generate stage-specific reply."""
+        # First call returns stage detection
+        stage_completion = MagicMock()
+        stage_completion.choices = [
+            MagicMock(
+                message=MagicMock(
+                    content='{"detected_stage": "pitched", "reasoning": "Call was proposed"}'
+                )
+            )
+        ]
+
+        # Second call returns the draft
+        draft_completion = MagicMock()
+        draft_completion.choices = [
+            MagicMock(message=MagicMock(content="Great, let me address your question..."))
+        ]
+
+        with patch.object(
+            client._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+        ) as mock_create:
+            mock_create.side_effect = [stage_completion, draft_completion]
+
+            result = await client.generate_draft(
+                lead_name="John",
+                lead_message="What would we discuss?",
+                conversation_history=[
+                    {"role": "you", "content": "Would you like to hop on a call?"},
+                ],
+            )
+
+            assert isinstance(result, DraftResult)
+            assert result.detected_stage == FunnelStage.PITCHED
+            assert "Great" in result.reply
+            assert mock_create.call_count == 2
+
+
 class TestGenerateReplyDraft:
     """Tests for the generate_reply_draft helper function."""
 
     @pytest.mark.asyncio
-    async def test_generate_reply_draft_calls_client(self):
-        """Should use the DeepSeek client to generate a draft."""
+    async def test_generate_reply_draft_returns_draft_result(self):
+        """Should return a DraftResult from generate_reply_draft."""
         with patch("app.services.deepseek.get_deepseek_client") as mock_get_client:
             mock_client = AsyncMock()
-            mock_client.generate_draft.return_value = "Generated reply"
+            mock_client.generate_draft.return_value = DraftResult(
+                detected_stage=FunnelStage.POSITIVE_REPLY,
+                stage_reasoning="Interest shown",
+                reply="Generated reply",
+            )
             mock_get_client.return_value = mock_client
 
             result = await generate_reply_draft(
@@ -162,5 +360,6 @@ class TestGenerateReplyDraft:
                 conversation_history=[],
             )
 
-            assert result == "Generated reply"
+            assert isinstance(result, DraftResult)
+            assert result.reply == "Generated reply"
             mock_client.generate_draft.assert_called_once()

@@ -1,0 +1,125 @@
+# Stage Detection Test Dataset
+#
+# Each conversation is stored once with stage markers.
+# The test runner slices at each marker to generate test cases.
+#
+# Structure:
+#   - Full message history is preserved
+#   - `stage_after` on a message marks what stage the conversation is in AFTER that message
+#   - Tests are generated for each `stage_after` marker using all messages up to that point
+
+conversations:
+  # ============================================================
+  # CONVERSATION 1: Shad Arnold - Reached PITCHED stage
+  # ============================================================
+  - id: "shad_arnold_001"
+    lead_name: "Shad Arnold"
+    final_outcome: "pitched"
+    notes: "Good rapport building, polite decline after pitch"
+
+    messages:
+      # -------- INITIATED PHASE --------
+      # (No lead reply yet - outbound only)
+
+      - role: "you"
+        content: |
+          Hey Shad
+
+          Pinpoint Innovation, Inc. looks interesting
+
+          You guys do analytics right? Do that w data visualization? Or what
+
+          Data is clarity. Clarity drives decisions. Decisions drive revenue.
+
+          See you're in Dallas-Fort Worth Metroplex. Just been to Fort Lauderdale in the US - and I mean the airport lol Have so many connections now that I need to visit for real. I'm in Glasgow, Scotland
+        time: "Jan 15"
+
+      - role: "you"
+        content: |
+          Oh yeah thought this would be helpful for you
+
+          https://docs.google.com/document/d/1l_vqZv-MRDK1RNV66gVucxKW5_pd-JjWZRYAzyOMPmI/edit?tab=t.0
+
+          How we added $25k/mo for a client through LinkedIn - targeting CEOs
+
+          Are your potential clients on here you think? Or nah
+        time: "Jan 15"
+
+      - role: "you"
+        content: "Let me know - cheers"
+        time: "Jan 20"
+
+      # ======== THRESHOLD: INITIATED -> POSITIVE_REPLY ========
+      - role: "lead"
+        content: "Thanks, Ian."
+        time: "Jan 20 3:19 PM"
+        stage_after: "positive_reply"
+        transition_notes: "First positive acknowledgment from lead"
+
+      # -------- POSITIVE_REPLY PHASE --------
+      # (Building rapport, learning about their situation)
+
+      - role: "you"
+        content: "Of course Shad"
+        time: "Jan 20 10:24 PM"
+
+      - role: "you"
+        content: |
+          https://www.linkedin.com/posts/shad-arnold-lc-clc-mies-41797313_a-note-to-us-manufacturers-builders-contractors-activity-7417664401236811776-kv8L?utm_source=share&utm_medium=member_desktop&rcm=ACoAABfwb4QBEM34VpGSI3mQBlJFQtSd5Cssv4A
+          Dig the direct callout to your icp here. Recent changes in the LI algo really reward doing this
+        time: "Jan 20 10:27 PM"
+
+      - role: "you"
+        content: "Big tailwind for US based manufacturers etc with the tariffs"
+        time: "Jan 20 10:29 PM"
+
+      - role: "you"
+        content: "On your profile now 4.5k is good on here. Is LinkedIn a big client acq channel for you? More word of mouth/warm network"
+        time: "Jan 20 10:29 PM"
+
+      - role: "lead"
+        content: "In the past 90/10, but these days, it's probably 50/50."
+        time: "Jan 20 11:00 PM"
+        stage_after: "positive_reply"
+        transition_notes: "Still in rapport - sharing info about their business"
+
+      - role: "you"
+        content: "Like to hear you have that positive word of mouth. Tough to scale without that"
+        time: "Jan 20 11:05 PM"
+
+      - role: "you"
+        content: "How's it going on here? Good # of clients? Or nah"
+        time: "Jan 20 11:07 PM"
+
+      - role: "lead"
+        content: "Good for intros"
+        time: "Jan 20 11:10 PM"
+        stage_after: "positive_reply"
+        transition_notes: "Still building rapport - lead sharing their LinkedIn experience"
+
+      - role: "you"
+        content: "LinkedIn is a gold mine for networking for sure"
+        time: "Jan 20 11:11 PM"
+
+      - role: "you"
+        content: "And client acq too provided there's more than 5000 prospects in your icp on here. And they're active"
+        time: "Jan 20 11:13 PM"
+
+      # ======== THRESHOLD: POSITIVE_REPLY -> PITCHED ========
+      - role: "you"
+        content: "You know I'd be down to talk sometime this wk. See if/how I can help you turn conversations to closed deals on LI. Similar to the 3 clients we've helped add $25k+/month. Wanna do that? Up to you"
+        time: "Jan 20 11:19 PM"
+        stage_after: "pitched"
+        transition_notes: "The pitch - invitation to call with value prop"
+
+      # -------- PITCHED PHASE --------
+      # (Lead responding to pitch)
+
+      - role: "lead"
+        content: |
+          👏👍😊
+
+          Not a fit right now, but I'll leave my door cracked open
+        time: "Jan 20 11:57 PM"
+        stage_after: "pitched"
+        transition_notes: "Polite decline - stays in pitched (no calendar sent)"

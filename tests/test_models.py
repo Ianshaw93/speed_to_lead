@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Conversation, Draft, DraftStatus, MessageDirection, MessageLog
+from app.models import Conversation, Draft, DraftStatus, FunnelStage, MessageDirection, MessageLog
 
 
 class TestConversationModel:
@@ -233,6 +233,73 @@ class TestMessageLogModel:
         assert directions == {MessageDirection.INBOUND, MessageDirection.OUTBOUND}
 
 
+class TestFunnelStageEnum:
+    """Tests for the FunnelStage enum."""
+
+    def test_funnel_stage_values(self):
+        """FunnelStage enum should have all required stages."""
+        expected_stages = {
+            "initiated",
+            "positive_reply",
+            "pitched",
+            "calendar_sent",
+            "booked",
+            "regeneration",
+        }
+        actual_stages = {stage.value for stage in FunnelStage}
+        assert actual_stages == expected_stages
+
+    @pytest.mark.asyncio
+    async def test_conversation_funnel_stage(self, test_db_session: AsyncSession):
+        """Conversation should support funnel_stage field."""
+        conversation = Conversation(
+            heyreach_lead_id="lead_stage",
+            linkedin_profile_url="https://linkedin.com/in/stage",
+            lead_name="Stage Test",
+            funnel_stage=FunnelStage.POSITIVE_REPLY,
+        )
+        test_db_session.add(conversation)
+        await test_db_session.commit()
+        await test_db_session.refresh(conversation)
+
+        assert conversation.funnel_stage == FunnelStage.POSITIVE_REPLY
+
+    @pytest.mark.asyncio
+    async def test_conversation_funnel_stage_nullable(self, test_db_session: AsyncSession):
+        """funnel_stage should be nullable for backwards compatibility."""
+        conversation = Conversation(
+            heyreach_lead_id="lead_no_stage",
+            linkedin_profile_url="https://linkedin.com/in/nostage",
+            lead_name="No Stage",
+        )
+        test_db_session.add(conversation)
+        await test_db_session.commit()
+        await test_db_session.refresh(conversation)
+
+        assert conversation.funnel_stage is None
+
+    @pytest.mark.asyncio
+    async def test_conversation_all_funnel_stages(self, test_db_session: AsyncSession):
+        """Should support all funnel stage values."""
+        for i, stage in enumerate(FunnelStage):
+            conversation = Conversation(
+                heyreach_lead_id=f"lead_stage_{i}",
+                linkedin_profile_url=f"https://linkedin.com/in/stage{i}",
+                lead_name=f"Stage {stage.value}",
+                funnel_stage=stage,
+            )
+            test_db_session.add(conversation)
+
+        await test_db_session.commit()
+
+        result = await test_db_session.execute(
+            select(Conversation).where(Conversation.funnel_stage.isnot(None))
+        )
+        conversations = result.scalars().all()
+        stages = {c.funnel_stage for c in conversations}
+        assert stages == set(FunnelStage)
+
+
 class TestSchemaVerification:
     """Tests to verify database schema has all required columns."""
 
@@ -250,6 +317,7 @@ class TestSchemaVerification:
             'lead_name',
             'linkedin_account_id',  # Added for sending messages via HeyReach
             'conversation_history',
+            'funnel_stage',  # Added for sales funnel tracking
             'created_at',
             'updated_at',
         }
