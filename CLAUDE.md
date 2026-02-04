@@ -20,6 +20,15 @@ This is part of a 3-project prospecting/outreach system:
 - Tests in `tests/` (mirrors source structure)
 - Alembic migrations in `alembic/versions/`
 
+## Database
+
+**IMPORTANT**: This project uses the Railway-hosted PostgreSQL database, not a local database.
+
+- Database is hosted on Railway (internal URL: `postgres.railway.internal`)
+- Migrations must be run from within Railway's environment, not locally
+- To run migrations: `cmd.exe /c "railway shell"` then `alembic upgrade head`
+- Or trigger via redeploy if migrations are set to run on startup
+
 ## Test Commands
 
 ```bash

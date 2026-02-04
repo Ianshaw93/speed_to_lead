@@ -87,10 +87,35 @@ async def health_check() -> HealthResponse:
 async def version() -> dict:
     """Return version info for debugging deployment issues."""
     return {
-        "version": "2026-01-30-v2",
+        "version": "2026-02-04-v1",
         "sender_id_type": "int|str",
         "migrations_retry": True,
     }
+
+
+@app.post("/admin/run-migrations")
+async def run_migrations(request: Request) -> dict:
+    """Run database migrations.
+
+    Protected by SECRET_KEY in the Authorization header.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    expected = f"Bearer {settings.secret_key}"
+
+    if auth_header != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        from alembic.config import Config
+        from alembic import command
+
+        alembic_cfg = Config("alembic.ini")
+        command.upgrade(alembic_cfg, "head")
+
+        return {"status": "ok", "message": "Migrations completed successfully"}
+    except Exception as e:
+        logger.error(f"Migration error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
