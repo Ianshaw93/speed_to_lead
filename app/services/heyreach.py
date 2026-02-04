@@ -174,6 +174,54 @@ class HeyReachClient:
         except Exception as e:
             raise HeyReachError(f"HeyReach API error: {e}") from e
 
+    async def remove_lead_from_list(
+        self,
+        list_id: int,
+        linkedin_url: str,
+    ) -> dict[str, Any]:
+        """Remove a lead from a HeyReach list.
+
+        Args:
+            list_id: The HeyReach list ID to remove the lead from.
+            linkedin_url: LinkedIn profile URL of the lead to remove.
+
+        Returns:
+            API response with success status.
+
+        Raises:
+            HeyReachError: If the API call fails.
+        """
+        try:
+            response = await self._client.post(
+                "/list/RemoveLeadsFromList",
+                json={
+                    "listId": list_id,
+                    "profileUrls": [linkedin_url],
+                },
+            )
+
+            if response.status_code != 200:
+                try:
+                    error_detail = response.json().get("error", response.text)
+                except Exception:
+                    error_detail = response.text
+                raise HeyReachError(f"Failed to remove lead from list: {error_detail}")
+
+            try:
+                result = response.json()
+                logger.info(
+                    f"Removed lead from list {list_id}: "
+                    f"linkedin_url={linkedin_url}, response={result}"
+                )
+                return result
+            except Exception:
+                return {"success": True, "response": response.text}
+
+        except HeyReachError:
+            raise
+        except Exception as e:
+            raise HeyReachError(f"HeyReach API error: {e}") from e
+
     async def close(self):
         """Close the HTTP client."""
         await self._client.aclose()

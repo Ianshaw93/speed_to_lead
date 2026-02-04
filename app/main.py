@@ -184,6 +184,14 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
             )
             session.add(message_log)
 
+            # 2.5. Check if prospect should be removed from follow-up list
+            # (if they replied within 24h of being added)
+            lead_profile_url_for_followup = payload.lead.profile_url if payload.lead else None
+            if lead_profile_url_for_followup:
+                removed = await check_and_remove_from_followup(session, lead_profile_url_for_followup)
+                if removed:
+                    logger.info(f"Removed {lead_profile_url_for_followup} from follow-up list (replied within 24h)")
+
             # 3. Generate AI draft via DeepSeek (with stage detection)
             print(f"Generating AI draft for conversation {conversation.id}", flush=True)
             logger.info(f"Generating AI draft for conversation {conversation.id}")
@@ -331,6 +339,74 @@ def normalize_linkedin_url(url: str) -> str:
     if "?" in url:
         url = url.split("?")[0]
     return url
+
+
+async def check_and_remove_from_followup(session, linkedin_url: str) -> bool:
+    """Check if prospect should be removed from follow-up list and remove if so.
+
+    A prospect should be removed if:
+    1. They exist in the database
+    2. They were added to a follow-up list
+    3. They were added within the last 24 hours
+
+    Args:
+        session: Database session.
+        linkedin_url: The prospect's LinkedIn profile URL.
+
+    Returns:
+        True if prospect was removed from follow-up list, False otherwise.
+    """
+    from datetime import datetime, timedelta, timezone
+    from app.services.heyreach import get_heyreach_client, HeyReachError
+
+    normalized_url = normalize_linkedin_url(linkedin_url)
+    if not normalized_url:
+        return False
+
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=24)
+
+    # Find prospect who was added to follow-up list within last 24 hours
+    result = await session.execute(
+        select(Prospect).where(
+            Prospect.linkedin_url == normalized_url,
+            Prospect.followup_list_id.isnot(None),
+            Prospect.added_to_followup_at > cutoff,
+        )
+    )
+    prospect = result.scalar_one_or_none()
+
+    if not prospect:
+        return False
+
+    # Prospect replied within 24h of being added to follow-up list
+    # Remove them from the HeyReach list
+    logger.info(
+        f"Prospect {prospect.full_name} ({normalized_url}) replied within 24h of "
+        f"being added to follow-up list {prospect.followup_list_id}. Removing..."
+    )
+
+    try:
+        heyreach = get_heyreach_client()
+        await heyreach.remove_lead_from_list(
+            list_id=prospect.followup_list_id,
+            linkedin_url=normalized_url,
+        )
+
+        # Clear the follow-up tracking fields
+        prospect.followup_list_id = None
+        prospect.added_to_followup_at = None
+        await session.commit()
+
+        logger.info(f"Successfully removed {normalized_url} from follow-up list")
+        return True
+
+    except HeyReachError as e:
+        logger.error(f"Failed to remove prospect from follow-up list: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error removing prospect from follow-up list: {e}", exc_info=True)
+        return False
 
 
 @app.post("/api/prospects")

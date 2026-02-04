@@ -85,6 +85,43 @@ async def get_prospect_personalized_message(
     return row
 
 
+async def update_prospect_followup_tracking(
+    session,
+    linkedin_url: str,
+    list_id: int,
+) -> None:
+    """Update prospect with follow-up list tracking info.
+
+    Args:
+        session: Database session.
+        linkedin_url: The prospect's LinkedIn profile URL.
+        list_id: The HeyReach follow-up list ID.
+    """
+    from datetime import datetime, timezone
+
+    # Normalize the URL
+    normalized_url = linkedin_url.lower().strip().rstrip("/")
+    if "?" in normalized_url:
+        normalized_url = normalized_url.split("?")[0]
+
+    result = await session.execute(
+        select(Prospect).where(Prospect.linkedin_url == normalized_url)
+    )
+    prospect = result.scalar_one_or_none()
+
+    if prospect:
+        prospect.followup_list_id = list_id
+        prospect.added_to_followup_at = datetime.now(timezone.utc)
+        logger.info(
+            f"Updated prospect {prospect.id} with follow-up tracking: "
+            f"list_id={list_id}, added_at={prospect.added_to_followup_at}"
+        )
+    else:
+        logger.warning(
+            f"Prospect not found for follow-up tracking: {normalized_url}"
+        )
+
+
 async def add_prospect_to_follow_up_list(
     conversation: Conversation,
     follow_up_messages: dict[str, str] | None = None,
@@ -770,6 +807,14 @@ async def _process_followup_submit(
 
             # Add to HeyReach list
             await add_prospect_to_follow_up_list(conversation, follow_up_messages)
+
+            # Update prospect with follow-up tracking info
+            await update_prospect_followup_tracking(
+                session,
+                conversation.linkedin_profile_url,
+                HEYREACH_FOLLOW_UP_LIST_ID,
+            )
+            await session.commit()
 
             # Send confirmation
             slack_bot = get_slack_bot()

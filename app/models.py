@@ -223,6 +223,12 @@ class Prospect(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # Follow-up list tracking (for automatic removal on reply)
+    followup_list_id: Mapped[int | None] = mapped_column(nullable=True)
+    added_to_followup_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Link to conversation (when they reply)
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("conversations.id"),

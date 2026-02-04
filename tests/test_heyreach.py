@@ -192,6 +192,50 @@ class TestHeyReachClient:
             assert lead["customUserFields"][0]["name"] == "FOLLOW_UP1"
 
 
+    @pytest.mark.asyncio
+    async def test_remove_lead_from_list_success(self, client):
+        """Should successfully remove a lead from a HeyReach list."""
+        mock_response = Response(
+            200,
+            json={"success": True, "removedCount": 1},
+        )
+
+        with patch.object(client._client, "post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = mock_response
+
+            result = await client.remove_lead_from_list(
+                list_id=511495,
+                linkedin_url="https://www.linkedin.com/in/testuser",
+            )
+
+            assert result["success"] is True
+            mock_post.assert_called_once()
+            call_args = mock_post.call_args
+            assert call_args[0][0] == "/list/RemoveLeadsFromList"
+            payload = call_args[1]["json"]
+            assert payload["listId"] == 511495
+            assert "https://www.linkedin.com/in/testuser" in payload["profileUrls"]
+
+    @pytest.mark.asyncio
+    async def test_remove_lead_from_list_api_error(self, client):
+        """Should raise HeyReachError on API failure when removing lead."""
+        mock_response = Response(
+            400,
+            json={"error": "Invalid list ID"},
+        )
+
+        with patch.object(client._client, "post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = mock_response
+
+            with pytest.raises(HeyReachError) as exc_info:
+                await client.remove_lead_from_list(
+                    list_id=999999,
+                    linkedin_url="https://www.linkedin.com/in/test",
+                )
+
+            assert "Failed to remove lead from list" in str(exc_info.value)
+
+
 class TestHeyReachWebhook:
     """Tests for the HeyReach webhook endpoint."""
 
