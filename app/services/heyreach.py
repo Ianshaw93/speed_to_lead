@@ -1,10 +1,13 @@
 """HeyReach API client for sending LinkedIn messages."""
 
+import logging
 from typing import Any
 
 import httpx
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class HeyReachError(Exception):
@@ -75,6 +78,94 @@ class HeyReachClient:
             # Response may be plain text or JSON
             try:
                 return response.json()
+            except Exception:
+                return {"success": True, "response": response.text}
+
+        except HeyReachError:
+            raise
+        except Exception as e:
+            raise HeyReachError(f"HeyReach API error: {e}") from e
+
+    async def add_leads_to_list(
+        self,
+        list_id: int,
+        leads: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Add leads to a HeyReach list with custom fields.
+
+        Args:
+            list_id: The HeyReach list ID to add leads to.
+            leads: List of lead dictionaries. Each lead should have:
+                - linkedin_url: LinkedIn profile URL (required)
+                - first_name: Lead's first name (optional)
+                - last_name: Lead's last name (optional)
+                - company_name: Lead's company (optional)
+                - job_title: Lead's job title (optional)
+                - custom_fields: Dict of custom field names to values (optional)
+                  e.g., {"FOLLOW_UP1": "msg1", "FOLLOW_UP2": "msg2"}
+
+        Returns:
+            API response with addedCount, updatedCount, failedCount.
+
+        Raises:
+            HeyReachError: If the API call fails.
+        """
+        formatted_leads = []
+        for lead in leads:
+            formatted = {
+                "profileUrl": lead.get("linkedin_url", ""),
+            }
+
+            # Add optional standard fields
+            if lead.get("first_name"):
+                formatted["firstName"] = lead["first_name"]
+            if lead.get("last_name"):
+                formatted["lastName"] = lead["last_name"]
+            if lead.get("company_name"):
+                formatted["companyName"] = lead["company_name"]
+            if lead.get("job_title"):
+                formatted["position"] = lead["job_title"]
+
+            # Add custom fields
+            custom_fields = lead.get("custom_fields", {})
+            if custom_fields:
+                custom_user_fields = []
+                for field_name, field_value in custom_fields.items():
+                    if field_value:  # Only add non-empty values
+                        custom_user_fields.append({
+                            "name": field_name,
+                            "value": str(field_value),
+                        })
+                if custom_user_fields:
+                    formatted["customUserFields"] = custom_user_fields
+
+            formatted_leads.append(formatted)
+
+        try:
+            response = await self._client.post(
+                "/list/AddLeadsToListV2",
+                json={
+                    "listId": list_id,
+                    "leads": formatted_leads,
+                },
+            )
+
+            if response.status_code != 200:
+                try:
+                    error_detail = response.json().get("error", response.text)
+                except Exception:
+                    error_detail = response.text
+                raise HeyReachError(f"Failed to add leads to list: {error_detail}")
+
+            try:
+                result = response.json()
+                logger.info(
+                    f"Added leads to list {list_id}: "
+                    f"added={result.get('addedCount', 0)}, "
+                    f"updated={result.get('updatedCount', 0)}, "
+                    f"failed={result.get('failedCount', 0)}"
+                )
+                return result
             except Exception:
                 return {"success": True, "response": response.text}
 

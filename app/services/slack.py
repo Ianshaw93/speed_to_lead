@@ -7,12 +7,24 @@ from slack_sdk.web.async_client import AsyncWebClient
 from slack_sdk.errors import SlackApiError
 
 from app.config import settings
+from app.models import FunnelStage
 
 
 class SlackError(Exception):
     """Custom exception for Slack API errors."""
 
     pass
+
+
+# Stage display names and emojis
+STAGE_DISPLAY = {
+    FunnelStage.INITIATED: ("1️⃣ Initiated", "Awaiting first reply"),
+    FunnelStage.POSITIVE_REPLY: ("2️⃣ Positive Reply", "Building rapport"),
+    FunnelStage.PITCHED: ("3️⃣ Pitched", "Call proposed"),
+    FunnelStage.CALENDAR_SENT: ("4️⃣ Calendar Sent", "Awaiting booking"),
+    FunnelStage.BOOKED: ("5️⃣ Booked", "Meeting confirmed"),
+    FunnelStage.REGENERATION: ("🔄 Re-engagement", "Nurturing"),
+}
 
 
 def build_draft_message(
@@ -22,6 +34,8 @@ def build_draft_message(
     linkedin_url: str,
     lead_message: str,
     ai_draft: str,
+    funnel_stage: FunnelStage | None = None,
+    stage_reasoning: str | None = None,
 ) -> list[dict[str, Any]]:
     """Build Slack Block Kit message for draft notification.
 
@@ -32,6 +46,8 @@ def build_draft_message(
         linkedin_url: LinkedIn profile URL.
         lead_message: The lead's message.
         ai_draft: The AI-generated draft reply.
+        funnel_stage: The detected funnel stage (optional).
+        stage_reasoning: AI reasoning for stage detection (optional).
 
     Returns:
         List of Slack Block Kit blocks.
@@ -54,6 +70,23 @@ def build_draft_message(
                 "emoji": True
             }
         },
+    ]
+
+    # Add funnel stage context if available
+    if funnel_stage:
+        stage_label, stage_desc = STAGE_DISPLAY.get(
+            funnel_stage, (funnel_stage.value, "")
+        )
+        stage_text = f"*Stage:* {stage_label}"
+        if stage_reasoning:
+            stage_text += f"\n_{stage_reasoning}_"
+
+        blocks.append({
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": stage_text}]
+        })
+
+    blocks.extend([
         {
             "type": "section",
             "fields": [
@@ -87,7 +120,7 @@ def build_draft_message(
         {
             "type": "divider"
         }
-    ]
+    ])
 
     return blocks
 
@@ -212,6 +245,8 @@ class SlackBot:
         linkedin_url: str,
         lead_message: str,
         ai_draft: str,
+        funnel_stage: FunnelStage | None = None,
+        stage_reasoning: str | None = None,
     ) -> str:
         """Send a draft notification to Slack.
 
@@ -223,6 +258,8 @@ class SlackBot:
             linkedin_url: LinkedIn profile URL.
             lead_message: The lead's message.
             ai_draft: The AI-generated draft reply.
+            funnel_stage: The detected funnel stage (optional).
+            stage_reasoning: AI reasoning for stage detection (optional).
 
         Returns:
             The Slack message timestamp (ts) for updates.
@@ -238,6 +275,8 @@ class SlackBot:
                 linkedin_url=linkedin_url,
                 lead_message=lead_message,
                 ai_draft=ai_draft,
+                funnel_stage=funnel_stage,
+                stage_reasoning=stage_reasoning,
             )
             blocks.extend(build_action_buttons(draft_id))
 
@@ -381,6 +420,128 @@ class SlackBot:
             raise SlackError(f"Failed to open modal: {e.response['error']}") from e
         except Exception as e:
             raise SlackError(f"Failed to open modal: {e}") from e
+
+    async def send_follow_up_config_message(
+        self,
+        conversation_id: uuid.UUID,
+        lead_name: str,
+    ) -> str:
+        """Send a message with button to configure follow-ups.
+
+        Args:
+            conversation_id: The conversation ID for the follow-up.
+            lead_name: Name of the lead.
+
+        Returns:
+            The message timestamp.
+
+        Raises:
+            SlackError: If sending fails.
+        """
+        try:
+            response = await self._client.chat_postMessage(
+                channel=self._channel_id,
+                text=f"Configure follow-ups for {lead_name}",
+                blocks=[
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"*Configure Follow-up Messages for {lead_name}*\n"
+                                    "Click below to set up the follow-up sequence."
+                        }
+                    },
+                    {
+                        "type": "actions",
+                        "elements": [
+                            {
+                                "type": "button",
+                                "text": {"type": "plain_text", "text": "Configure Follow-ups", "emoji": True},
+                                "style": "primary",
+                                "action_id": "configure_followups",
+                                "value": str(conversation_id),
+                            },
+                            {
+                                "type": "button",
+                                "text": {"type": "plain_text", "text": "Skip", "emoji": True},
+                                "action_id": "skip_followups",
+                                "value": str(conversation_id),
+                            }
+                        ]
+                    }
+                ],
+            )
+            return response["ts"]
+        except SlackApiError as e:
+            raise SlackError(f"Failed to send follow-up config message: {e.response['error']}") from e
+        except Exception as e:
+            raise SlackError(f"Failed to send follow-up config message: {e}") from e
+
+    async def open_follow_up_modal(
+        self,
+        trigger_id: str,
+        conversation_id: uuid.UUID,
+        personalized_message: str | None,
+        suggested_follow_up1: str = "",
+    ) -> None:
+        """Open modal for configuring follow-up messages.
+
+        Args:
+            trigger_id: Slack trigger ID from the interaction.
+            conversation_id: The conversation to configure follow-ups for.
+            personalized_message: The original personalized message to display.
+            suggested_follow_up1: Pre-filled suggestion for FOLLOW_UP1.
+
+        Raises:
+            SlackError: If opening modal fails.
+        """
+        blocks = []
+
+        # Display personalized_message if available
+        if personalized_message:
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Original Personalized Message:*\n_{personalized_message}_"
+                }
+            })
+            blocks.append({"type": "divider"})
+
+        # Input for FOLLOW_UP1
+        blocks.append({
+            "type": "input",
+            "block_id": "follow_up1_input",
+            "element": {
+                "type": "plain_text_input",
+                "action_id": "follow_up1_text",
+                "multiline": True,
+                "initial_value": suggested_follow_up1,
+                "placeholder": {
+                    "type": "plain_text",
+                    "text": "Enter the first follow-up message..."
+                }
+            },
+            "label": {"type": "plain_text", "text": "FOLLOW_UP1 Message"}
+        })
+
+        try:
+            await self._client.views_open(
+                trigger_id=trigger_id,
+                view={
+                    "type": "modal",
+                    "callback_id": "configure_followups_submit",
+                    "title": {"type": "plain_text", "text": "Follow-up Config"},
+                    "submit": {"type": "plain_text", "text": "Save & Add to List"},
+                    "close": {"type": "plain_text", "text": "Cancel"},
+                    "blocks": blocks,
+                    "private_metadata": str(conversation_id),
+                }
+            )
+        except SlackApiError as e:
+            raise SlackError(f"Failed to open follow-up modal: {e.response['error']}") from e
+        except Exception as e:
+            raise SlackError(f"Failed to open follow-up modal: {e}") from e
 
 
 # Global bot instance

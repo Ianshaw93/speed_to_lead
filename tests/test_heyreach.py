@@ -78,6 +78,119 @@ class TestHeyReachClient:
         client = HeyReachClient(api_key="my_secret_key")
         assert client._api_key == "my_secret_key"
 
+    @pytest.mark.asyncio
+    async def test_add_leads_to_list_success(self, client):
+        """Should successfully add leads to a HeyReach list."""
+        mock_response = Response(
+            200,
+            json={"addedCount": 1, "updatedCount": 0, "failedCount": 0},
+        )
+
+        with patch.object(client._client, "post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = mock_response
+
+            result = await client.add_leads_to_list(
+                list_id=511495,
+                leads=[{
+                    "linkedin_url": "https://www.linkedin.com/in/johndoe",
+                    "first_name": "John",
+                    "last_name": "Doe",
+                }],
+            )
+
+            assert result["addedCount"] == 1
+            mock_post.assert_called_once()
+            call_args = mock_post.call_args
+            assert call_args[0][0] == "/list/AddLeadsToListV2"
+            payload = call_args[1]["json"]
+            assert payload["listId"] == 511495
+            assert len(payload["leads"]) == 1
+            assert payload["leads"][0]["profileUrl"] == "https://www.linkedin.com/in/johndoe"
+
+    @pytest.mark.asyncio
+    async def test_add_leads_to_list_with_custom_fields(self, client):
+        """Should add leads with custom fields."""
+        mock_response = Response(
+            200,
+            json={"addedCount": 1, "updatedCount": 0, "failedCount": 0},
+        )
+
+        with patch.object(client._client, "post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = mock_response
+
+            result = await client.add_leads_to_list(
+                list_id=511495,
+                leads=[{
+                    "linkedin_url": "https://www.linkedin.com/in/johndoe",
+                    "first_name": "John",
+                    "last_name": "Doe",
+                    "custom_fields": {
+                        "FOLLOW_UP1": "Hey John, following up on our chat.",
+                        "FOLLOW_UP2": "Just checking in again.",
+                        "FOLLOW_UP3": "Last follow up!",
+                    },
+                }],
+            )
+
+            assert result["addedCount"] == 1
+            call_args = mock_post.call_args
+            payload = call_args[1]["json"]
+            lead = payload["leads"][0]
+            assert "customUserFields" in lead
+            custom_fields = {f["name"]: f["value"] for f in lead["customUserFields"]}
+            assert custom_fields["FOLLOW_UP1"] == "Hey John, following up on our chat."
+            assert custom_fields["FOLLOW_UP2"] == "Just checking in again."
+            assert custom_fields["FOLLOW_UP3"] == "Last follow up!"
+
+    @pytest.mark.asyncio
+    async def test_add_leads_to_list_api_error(self, client):
+        """Should raise HeyReachError on API failure."""
+        mock_response = Response(
+            400,
+            json={"error": "Invalid list ID"},
+        )
+
+        with patch.object(client._client, "post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = mock_response
+
+            with pytest.raises(HeyReachError) as exc_info:
+                await client.add_leads_to_list(
+                    list_id=999999,
+                    leads=[{"linkedin_url": "https://www.linkedin.com/in/test"}],
+                )
+
+            assert "Failed to add leads to list" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_add_leads_to_list_skips_empty_custom_fields(self, client):
+        """Should skip custom fields with empty values."""
+        mock_response = Response(
+            200,
+            json={"addedCount": 1, "updatedCount": 0, "failedCount": 0},
+        )
+
+        with patch.object(client._client, "post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = mock_response
+
+            await client.add_leads_to_list(
+                list_id=511495,
+                leads=[{
+                    "linkedin_url": "https://www.linkedin.com/in/johndoe",
+                    "custom_fields": {
+                        "FOLLOW_UP1": "Has value",
+                        "FOLLOW_UP2": "",  # Empty - should be skipped
+                        "FOLLOW_UP3": None,  # None - should be skipped
+                    },
+                }],
+            )
+
+            call_args = mock_post.call_args
+            payload = call_args[1]["json"]
+            lead = payload["leads"][0]
+            # Only FOLLOW_UP1 should be present
+            assert len(lead["customUserFields"]) == 1
+            assert lead["customUserFields"][0]["name"] == "FOLLOW_UP1"
+
 
 class TestHeyReachWebhook:
     """Tests for the HeyReach webhook endpoint."""

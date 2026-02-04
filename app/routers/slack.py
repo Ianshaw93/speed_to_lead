@@ -16,9 +16,13 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database import async_session_factory
-from app.models import Conversation, Draft, DraftStatus, MessageDirection, MessageLog
+from app.models import Conversation, Draft, DraftStatus, MessageDirection, MessageLog, Prospect
 from app.services.deepseek import generate_reply_draft
 from app.services.heyreach import get_heyreach_client, HeyReachError
+from app.models import Conversation
+
+# HeyReach list ID for follow-up sequences
+HEYREACH_FOLLOW_UP_LIST_ID = 511495
 from app.services.slack import (
     SlackBot,
     SlackError,
@@ -30,6 +34,114 @@ from app.services.slack import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/slack", tags=["slack"])
+
+# Default FOLLOW_UP2 message
+DEFAULT_FOLLOW_UP2 = "Would it even make sense for you to get clients on here? LI is not always a good fit"
+
+
+def count_google_docs_links(conversation_history: list[dict] | None) -> int:
+    """Count Google Docs links in conversation history.
+
+    Args:
+        conversation_history: List of message dicts with 'content' field.
+
+    Returns:
+        Number of Google Docs links found.
+    """
+    if not conversation_history:
+        return 0
+
+    import re
+    docs_pattern = r'https?://docs\.google\.com/[^\s<>\"\']+'
+    count = 0
+
+    for message in conversation_history:
+        content = message.get("content", "")
+        matches = re.findall(docs_pattern, content)
+        count += len(matches)
+
+    return count
+
+
+async def get_prospect_personalized_message(
+    session,
+    linkedin_url: str,
+) -> str | None:
+    """Get the personalized_message for a prospect by LinkedIn URL.
+
+    Args:
+        session: Database session.
+        linkedin_url: The prospect's LinkedIn profile URL.
+
+    Returns:
+        The personalized_message or None if not found.
+    """
+    result = await session.execute(
+        select(Prospect.personalized_message).where(
+            Prospect.linkedin_url == linkedin_url
+        )
+    )
+    row = result.scalar_one_or_none()
+    return row
+
+
+async def add_prospect_to_follow_up_list(
+    conversation: Conversation,
+    follow_up_messages: dict[str, str] | None = None,
+) -> None:
+    """Add a prospect to the HeyReach follow-up list after sending a message.
+
+    Args:
+        conversation: The conversation with prospect info.
+        follow_up_messages: Dict with FOLLOW_UP1, FOLLOW_UP2, FOLLOW_UP3 values.
+            If None, custom fields will be empty.
+    """
+    try:
+        heyreach = get_heyreach_client()
+
+        # Parse name into first/last if possible
+        name_parts = conversation.lead_name.split(" ", 1)
+        first_name = name_parts[0] if name_parts else ""
+        last_name = name_parts[1] if len(name_parts) > 1 else ""
+
+        # Build custom fields - values to be determined
+        custom_fields = {}
+        if follow_up_messages:
+            if follow_up_messages.get("FOLLOW_UP1"):
+                custom_fields["FOLLOW_UP1"] = follow_up_messages["FOLLOW_UP1"]
+            if follow_up_messages.get("FOLLOW_UP2"):
+                custom_fields["FOLLOW_UP2"] = follow_up_messages["FOLLOW_UP2"]
+            if follow_up_messages.get("FOLLOW_UP3"):
+                custom_fields["FOLLOW_UP3"] = follow_up_messages["FOLLOW_UP3"]
+
+        lead_data = {
+            "linkedin_url": conversation.linkedin_profile_url,
+            "first_name": first_name,
+            "last_name": last_name,
+            "custom_fields": custom_fields,
+        }
+
+        await heyreach.add_leads_to_list(
+            list_id=HEYREACH_FOLLOW_UP_LIST_ID,
+            leads=[lead_data],
+        )
+        logger.info(
+            f"Added prospect {conversation.lead_name} to follow-up list "
+            f"{HEYREACH_FOLLOW_UP_LIST_ID}"
+        )
+
+    except HeyReachError as e:
+        # Log but don't fail the main flow
+        logger.error(
+            f"Failed to add prospect to follow-up list: {e}. "
+            f"Conversation: {conversation.id}"
+        )
+    except Exception as e:
+        logger.error(
+            f"Unexpected error adding prospect to follow-up list: {e}. "
+            f"Conversation: {conversation.id}",
+            exc_info=True,
+        )
 
 
 async def verify_slack_signature(request: Request) -> bytes:
@@ -166,6 +278,12 @@ async def _process_approve(draft_id: uuid.UUID, message_ts: str) -> None:
             await slack_bot.remove_buttons(
                 message_ts=message_ts,
                 final_text="Message sent successfully!"
+            )
+
+            # Send follow-up configuration message
+            await slack_bot.send_follow_up_config_message(
+                conversation_id=conversation.id,
+                lead_name=conversation.lead_name,
             )
 
             logger.info(f"Approved and sent draft {draft_id}")
@@ -483,12 +601,18 @@ async def _process_modal_submit(draft_id: uuid.UUID, edited_text: str) -> None:
             await session.commit()
 
             # Update original Slack message if we have the ts
+            slack_bot = get_slack_bot()
             if draft.slack_message_ts:
-                slack_bot = get_slack_bot()
                 await slack_bot.remove_buttons(
                     message_ts=draft.slack_message_ts,
                     final_text="Edited message sent successfully!"
                 )
+
+            # Send follow-up configuration message
+            await slack_bot.send_follow_up_config_message(
+                conversation_id=conversation.id,
+                lead_name=conversation.lead_name,
+            )
 
             logger.info(f"Sent edited draft {draft_id}")
 
@@ -500,6 +624,157 @@ async def _process_modal_submit(draft_id: uuid.UUID, edited_text: str) -> None:
         logger.error(f"Error sending edited draft {draft_id}: {e}", exc_info=True)
         slack_bot = get_slack_bot()
         await slack_bot.send_confirmation(f"Error: {e}")
+
+
+async def handle_configure_followups(
+    conversation_id: uuid.UUID,
+    trigger_id: str,
+    message_ts: str,
+) -> None:
+    """Handle configure_followups button - open modal for follow-up config.
+
+    Args:
+        conversation_id: The conversation to configure follow-ups for.
+        trigger_id: Slack trigger ID for opening modal.
+        message_ts: Slack message timestamp for updates.
+    """
+    try:
+        async with async_session_factory() as session:
+            # Get conversation
+            result = await session.execute(
+                select(Conversation).where(Conversation.id == conversation_id)
+            )
+            conversation = result.scalar_one_or_none()
+
+            if not conversation:
+                logger.error(f"Conversation {conversation_id} not found")
+                slack_bot = get_slack_bot()
+                await slack_bot.remove_buttons(
+                    message_ts=message_ts,
+                    final_text="Error: Conversation not found."
+                )
+                return
+
+            # Get personalized_message from Prospect
+            personalized_message = await get_prospect_personalized_message(
+                session, conversation.linkedin_profile_url
+            )
+
+            slack_bot = get_slack_bot()
+            await slack_bot.open_follow_up_modal(
+                trigger_id=trigger_id,
+                conversation_id=conversation_id,
+                personalized_message=personalized_message,
+                suggested_follow_up1="",
+            )
+
+    except Exception as e:
+        logger.error(f"Error opening follow-up modal: {e}", exc_info=True)
+        slack_bot = get_slack_bot()
+        await slack_bot.send_confirmation(f"Error opening modal: {e}")
+
+
+async def handle_skip_followups(
+    conversation_id: uuid.UUID,
+    message_ts: str,
+    background_tasks: BackgroundTasks,
+) -> None:
+    """Handle skip_followups button - skip adding to list.
+
+    Args:
+        conversation_id: The conversation to skip follow-ups for.
+        message_ts: Slack message timestamp for updates.
+        background_tasks: FastAPI background tasks.
+    """
+    background_tasks.add_task(_process_skip_followups, conversation_id, message_ts)
+
+
+async def _process_skip_followups(
+    conversation_id: uuid.UUID,
+    message_ts: str,
+) -> None:
+    """Background task to process skip follow-ups."""
+    try:
+        slack_bot = get_slack_bot()
+        await slack_bot.remove_buttons(
+            message_ts=message_ts,
+            final_text="Skipped - follow-ups not configured."
+        )
+        logger.info(f"Skipped follow-ups for conversation {conversation_id}")
+    except Exception as e:
+        logger.error(f"Error skipping follow-ups: {e}", exc_info=True)
+
+
+async def handle_followup_modal_submit(
+    conversation_id: uuid.UUID,
+    follow_up1: str,
+    background_tasks: BackgroundTasks,
+) -> None:
+    """Handle follow-up modal submission.
+
+    Args:
+        conversation_id: The conversation to add to list.
+        follow_up1: The FOLLOW_UP1 message from user input.
+        background_tasks: FastAPI background tasks.
+    """
+    background_tasks.add_task(_process_followup_submit, conversation_id, follow_up1)
+
+
+async def _process_followup_submit(
+    conversation_id: uuid.UUID,
+    follow_up1: str,
+) -> None:
+    """Background task to process follow-up submission and add to list."""
+    try:
+        async with async_session_factory() as session:
+            # Get conversation
+            result = await session.execute(
+                select(Conversation).where(Conversation.id == conversation_id)
+            )
+            conversation = result.scalar_one_or_none()
+
+            if not conversation:
+                logger.error(f"Conversation {conversation_id} not found for follow-up")
+                slack_bot = get_slack_bot()
+                await slack_bot.send_confirmation(
+                    "Error: Conversation not found when saving follow-ups."
+                )
+                return
+
+            # Determine FOLLOW_UP2 based on Google Docs links
+            docs_count = count_google_docs_links(conversation.conversation_history)
+            if docs_count >= 2:
+                follow_up2 = DEFAULT_FOLLOW_UP2
+                logger.info(
+                    f"Found {docs_count} Google Docs links, using default FOLLOW_UP2"
+                )
+            else:
+                # Default to the message anyway as per user's request
+                follow_up2 = DEFAULT_FOLLOW_UP2
+                logger.info(
+                    f"Found {docs_count} Google Docs links, defaulting to FOLLOW_UP2"
+                )
+
+            # Build follow-up messages
+            follow_up_messages = {
+                "FOLLOW_UP1": follow_up1,
+                "FOLLOW_UP2": follow_up2,
+                "FOLLOW_UP3": "",  # Leave empty for now
+            }
+
+            # Add to HeyReach list
+            await add_prospect_to_follow_up_list(conversation, follow_up_messages)
+
+            # Send confirmation
+            slack_bot = get_slack_bot()
+            await slack_bot.send_confirmation(
+                f"Added {conversation.lead_name} to follow-up list with custom messages."
+            )
+
+    except Exception as e:
+        logger.error(f"Error processing follow-up submission: {e}", exc_info=True)
+        slack_bot = get_slack_bot()
+        await slack_bot.send_confirmation(f"Error saving follow-ups: {e}")
 
 
 @router.post("/interactions")
@@ -533,14 +808,29 @@ async def slack_interactions(
 
         action = actions[0]
         action_id = action.get("action_id", "")
-        draft_id_str = action.get("value", "")
+        value_str = action.get("value", "")
         message_ts = payload.get("message", {}).get("ts", "")
         trigger_id = payload.get("trigger_id", "")
 
+        # Handle follow-up configuration actions (use conversation_id)
+        if action_id in ("configure_followups", "skip_followups"):
+            try:
+                conversation_id = uuid.UUID(value_str)
+            except ValueError:
+                logger.error(f"Invalid conversation_id: {value_str}")
+                return {"ok": True}
+
+            if action_id == "configure_followups":
+                await handle_configure_followups(conversation_id, trigger_id, message_ts)
+            elif action_id == "skip_followups":
+                await handle_skip_followups(conversation_id, message_ts, background_tasks)
+            return {"ok": True}
+
+        # Handle draft actions (use draft_id)
         try:
-            draft_id = uuid.UUID(draft_id_str)
+            draft_id = uuid.UUID(value_str)
         except ValueError:
-            logger.error(f"Invalid draft_id: {draft_id_str}")
+            logger.error(f"Invalid draft_id: {value_str}")
             return {"ok": True}
 
         # Route to appropriate handler
@@ -563,9 +853,29 @@ async def slack_interactions(
         view = payload.get("view", {})
         callback_id = view.get("callback_id", "")
         private_metadata = view.get("private_metadata", "")
+        values = view.get("state", {}).get("values", {})
 
-        # Extract draft_id from callback_id (format: edit_draft_{uuid})
-        if callback_id.startswith("edit_draft_"):
+        # Handle follow-up configuration modal
+        if callback_id == "configure_followups_submit":
+            try:
+                conversation_id = uuid.UUID(private_metadata)
+            except ValueError:
+                logger.error(f"Invalid conversation_id in metadata: {private_metadata}")
+                return {"ok": True}
+
+            # Extract FOLLOW_UP1 from view values
+            follow_up1 = (
+                values.get("follow_up1_input", {})
+                .get("follow_up1_text", {})
+                .get("value", "")
+            )
+
+            await handle_followup_modal_submit(
+                conversation_id, follow_up1, background_tasks
+            )
+
+        # Handle draft edit modal (format: edit_draft_{uuid})
+        elif callback_id.startswith("edit_draft_"):
             try:
                 draft_id = uuid.UUID(private_metadata)
             except ValueError:
@@ -573,7 +883,6 @@ async def slack_interactions(
                 return {"ok": True}
 
             # Extract edited text from view values
-            values = view.get("state", {}).get("values", {})
             edited_text = (
                 values.get("draft_input", {})
                 .get("draft_text", {})
@@ -584,3 +893,42 @@ async def slack_interactions(
                 await handle_modal_submit(draft_id, edited_text, background_tasks)
 
     return {"ok": True}
+
+
+@router.post("/test-followup-message")
+async def test_followup_message(
+    lead_name: str = "Test Lead",
+    conversation_id: str | None = None,
+) -> dict:
+    """Test endpoint to send a follow-up configuration message.
+
+    This lets you test the modal flow without sending actual HeyReach messages.
+
+    Args:
+        lead_name: Name to display in the message.
+        conversation_id: Optional conversation ID (uses random if not provided).
+
+    Returns:
+        Status and message timestamp.
+    """
+    import uuid as uuid_module
+
+    test_conv_id = (
+        uuid_module.UUID(conversation_id)
+        if conversation_id
+        else uuid_module.uuid4()
+    )
+
+    slack_bot = get_slack_bot()
+    ts = await slack_bot.send_follow_up_config_message(
+        conversation_id=test_conv_id,
+        lead_name=lead_name,
+    )
+
+    return {
+        "status": "sent",
+        "message_ts": ts,
+        "conversation_id": str(test_conv_id),
+        "note": "Click 'Configure Follow-ups' button to test the modal. "
+                "Submission will fail gracefully since no real conversation exists.",
+    }
