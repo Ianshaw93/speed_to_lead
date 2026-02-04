@@ -1,5 +1,15 @@
 # Claude Code Instructions
 
+## Related Projects
+
+This is part of a 3-project prospecting/outreach system:
+
+| Project | Path | Purpose |
+|---------|------|---------|
+| **speed_to_lead** | `C:\Users\IanShaw\localProgramming\smiths\speed_to_lead` | Prospecting & lead tracking |
+| **multichannel-outreach** | `C:\Users\IanShaw\localProgramming\smiths\multichannel-outreach` | Messaging & outreach automation |
+| **contentCreator** | `C:\Users\IanShaw\localProgramming\smiths\contentCreator` | Content generation |
+
 ## Test-Driven Development (TDD)
 
 When implementing new features or fixing bugs, follow this TDD workflow:
