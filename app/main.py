@@ -497,6 +497,7 @@ async def register_prospects(request: Request) -> dict:
                         company_industry=p.get("companyIndustry") or p.get("company_industry"),
                         location=p.get("addressWithCountry") or p.get("location"),
                         headline=p.get("headline"),
+                        email=p.get("email") or p.get("emailAddress"),
                         source_type=ProspectSource(source_type) if source_type in [e.value for e in ProspectSource] else ProspectSource.OTHER,
                         source_keyword=source_keyword or p.get("source_keyword"),
                         source_post_url=p.get("source_post_url"),
@@ -577,6 +578,7 @@ async def backfill_prospects(request: Request) -> dict:
                     company_industry=p.get("company_industry") or p.get("companyIndustry"),
                     location=p.get("location") or p.get("addressWithCountry"),
                     headline=p.get("headline"),
+                    email=p.get("email") or p.get("emailAddress"),
                     source_type=source_type,
                     source_keyword=p.get("source_keyword"),
                     source_post_url=p.get("source_post_url"),
@@ -654,4 +656,89 @@ async def prospects_stats() -> dict:
             "by_source": source_counts,
             "replied": replied_count,
             "reply_rate": f"{(replied_count / total_count * 100):.1f}%" if total_count > 0 else "0%",
+        }
+
+
+@app.get("/api/prospects/lookup")
+async def lookup_prospect(
+    email: str | None = None,
+    name: str | None = None,
+    first_name: str | None = None,
+    last_name: str | None = None,
+) -> dict:
+    """Look up a prospect by email or name.
+
+    Used to find prospects from Calendly bookings etc.
+    Returns linkedin_url if found.
+
+    Query params:
+        email: Email address to search
+        name: Full name to search (fuzzy match)
+        first_name: First name to search
+        last_name: Last name to search
+
+    Returns:
+        List of matching prospects with linkedin_url
+    """
+    from sqlalchemy import or_, func
+
+    if not any([email, name, first_name, last_name]):
+        raise HTTPException(
+            status_code=400,
+            detail="Must provide at least one of: email, name, first_name, last_name"
+        )
+
+    async with async_session_factory() as session:
+        conditions = []
+
+        # Email match (exact, case-insensitive)
+        if email:
+            conditions.append(func.lower(Prospect.email) == email.lower().strip())
+
+        # Name matching
+        if name:
+            # Split name and try to match
+            name_parts = name.strip().split()
+            if len(name_parts) >= 2:
+                # Try first + last name combo
+                conditions.append(
+                    (func.lower(Prospect.first_name) == name_parts[0].lower()) &
+                    (func.lower(Prospect.last_name) == name_parts[-1].lower())
+                )
+            # Also try full_name contains
+            conditions.append(func.lower(Prospect.full_name).contains(name.lower()))
+
+        if first_name and last_name:
+            conditions.append(
+                (func.lower(Prospect.first_name) == first_name.lower().strip()) &
+                (func.lower(Prospect.last_name) == last_name.lower().strip())
+            )
+        elif first_name:
+            conditions.append(func.lower(Prospect.first_name) == first_name.lower().strip())
+        elif last_name:
+            conditions.append(func.lower(Prospect.last_name) == last_name.lower().strip())
+
+        if not conditions:
+            return {"matches": [], "count": 0}
+
+        result = await session.execute(
+            select(Prospect).where(or_(*conditions)).limit(10)
+        )
+        prospects = result.scalars().all()
+
+        matches = []
+        for p in prospects:
+            matches.append({
+                "linkedin_url": p.linkedin_url,
+                "full_name": p.full_name,
+                "first_name": p.first_name,
+                "last_name": p.last_name,
+                "email": p.email,
+                "company_name": p.company_name,
+                "job_title": p.job_title,
+            })
+
+        return {
+            "matches": matches,
+            "count": len(matches),
         }
