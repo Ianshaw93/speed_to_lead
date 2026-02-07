@@ -222,6 +222,55 @@ class HeyReachClient:
         except Exception as e:
             raise HeyReachError(f"HeyReach API error: {e}") from e
 
+    async def stop_lead_in_campaign(
+        self,
+        campaign_id: int,
+        linkedin_url: str,
+    ) -> dict[str, Any]:
+        """Stop a lead from receiving further messages in a campaign.
+
+        Args:
+            campaign_id: The HeyReach campaign ID.
+            linkedin_url: LinkedIn profile URL of the lead to stop.
+
+        Returns:
+            API response with success status.
+
+        Raises:
+            HeyReachError: If the API call fails.
+        """
+        try:
+            response = await self._client.post(
+                "/campaign/StopLeadInCampaign",
+                json={
+                    "campaignId": campaign_id,
+                    "leadUrl": linkedin_url,
+                },
+            )
+
+            if response.status_code == 404:
+                logger.warning(
+                    f"Lead not found in campaign {campaign_id}: {linkedin_url}"
+                )
+                return {"success": False, "error": "Lead not found in campaign"}
+
+            if response.status_code != 200:
+                try:
+                    error_detail = response.json().get("error", response.text)
+                except Exception:
+                    error_detail = response.text
+                raise HeyReachError(f"Failed to stop lead in campaign: {error_detail}")
+
+            logger.info(
+                f"Stopped lead in campaign {campaign_id}: linkedin_url={linkedin_url}"
+            )
+            return {"success": True}
+
+        except HeyReachError:
+            raise
+        except Exception as e:
+            raise HeyReachError(f"HeyReach API error: {e}") from e
+
     async def close(self):
         """Close the HTTP client."""
         await self._client.aclose()

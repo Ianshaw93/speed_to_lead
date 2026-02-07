@@ -64,13 +64,43 @@ async def test_db_session(test_db_engine) -> AsyncGenerator[AsyncSession, None]:
 
 
 @pytest_asyncio.fixture
-async def test_client() -> AsyncGenerator[AsyncClient, None]:
-    """Create a test client for the FastAPI app."""
+async def test_client(test_db_engine) -> AsyncGenerator[AsyncClient, None]:
+    """Create a test client for the FastAPI app with test database.
+
+    This fixture overrides the get_db dependency to use the test database,
+    ensuring API endpoints use the same database as test fixtures.
+    """
     from app.main import app
+    from app.database import get_db
+    from app.models import Base
+
+    # Create tables in test database
+    async with test_db_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    # Create session factory for test database
+    test_session_factory = async_sessionmaker(
+        test_db_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+
+    # Override the get_db dependency
+    async def override_get_db():
+        async with test_session_factory() as session:
+            try:
+                yield session
+            finally:
+                await session.close()
+
+    app.dependency_overrides[get_db] = override_get_db
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+
+    # Clean up
+    app.dependency_overrides.clear()
 
 
 # ============================================================

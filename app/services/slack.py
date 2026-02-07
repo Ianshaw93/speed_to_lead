@@ -125,6 +125,55 @@ def build_draft_message(
     return blocks
 
 
+def build_classification_buttons(
+    draft_id: uuid.UUID,
+    is_first_reply: bool = False,
+) -> list[dict[str, Any]]:
+    """Build classification buttons for metrics tracking.
+
+    Args:
+        draft_id: The draft ID to include in action values.
+        is_first_reply: Whether this is the first reply from the lead.
+            If True, includes the "Positive Reply" button.
+
+    Returns:
+        List of Slack Block Kit blocks (context + actions).
+    """
+    elements = []
+
+    # Only show Positive Reply button on first reply
+    if is_first_reply:
+        elements.append({
+            "type": "button",
+            "text": {"type": "plain_text", "text": "\U0001f44d Positive Reply", "emoji": True},
+            "action_id": "classify_positive",
+            "value": str(draft_id),
+        })
+
+    # Always show Not Interested and Not ICP buttons
+    elements.extend([
+        {
+            "type": "button",
+            "text": {"type": "plain_text", "text": "\U0001f44e Not Interested", "emoji": True},
+            "action_id": "classify_not_interested",
+            "value": str(draft_id),
+        },
+        {
+            "type": "button",
+            "text": {"type": "plain_text", "text": "\U0001f6ab Not ICP", "emoji": True},
+            "action_id": "classify_not_icp",
+            "value": str(draft_id),
+        },
+    ])
+
+    return [
+        {
+            "type": "actions",
+            "elements": elements,
+        }
+    ]
+
+
 def build_action_buttons(draft_id: uuid.UUID) -> list[dict[str, Any]]:
     """Build action buttons for the draft message.
 
@@ -247,6 +296,7 @@ class SlackBot:
         ai_draft: str,
         funnel_stage: FunnelStage | None = None,
         stage_reasoning: str | None = None,
+        is_first_reply: bool = False,
     ) -> str:
         """Send a draft notification to Slack.
 
@@ -260,6 +310,7 @@ class SlackBot:
             ai_draft: The AI-generated draft reply.
             funnel_stage: The detected funnel stage (optional).
             stage_reasoning: AI reasoning for stage detection (optional).
+            is_first_reply: Whether this is the lead's first reply.
 
         Returns:
             The Slack message timestamp (ts) for updates.
@@ -278,6 +329,9 @@ class SlackBot:
                 funnel_stage=funnel_stage,
                 stage_reasoning=stage_reasoning,
             )
+            # Add classification buttons (above action buttons)
+            blocks.extend(build_classification_buttons(draft_id, is_first_reply))
+            # Add action buttons (Send, Edit, etc.)
             blocks.extend(build_action_buttons(draft_id))
 
             response = await self._client.chat_postMessage(
@@ -542,6 +596,78 @@ class SlackBot:
             raise SlackError(f"Failed to open follow-up modal: {e.response['error']}") from e
         except Exception as e:
             raise SlackError(f"Failed to open follow-up modal: {e}") from e
+
+    async def open_not_icp_modal(
+        self,
+        trigger_id: str,
+        draft_id: uuid.UUID,
+        lead_name: str,
+        lead_title: str | None = None,
+        lead_company: str | None = None,
+    ) -> None:
+        """Open a modal for Not ICP classification with optional notes.
+
+        Args:
+            trigger_id: Slack trigger ID from the interaction.
+            draft_id: The draft being classified.
+            lead_name: Name of the lead.
+            lead_title: Lead's job title (optional).
+            lead_company: Lead's company (optional).
+
+        Raises:
+            SlackError: If opening modal fails.
+        """
+        # Build lead info line
+        lead_info = lead_name
+        if lead_title and lead_company:
+            lead_info = f"{lead_name} ({lead_title} @ {lead_company})"
+        elif lead_title:
+            lead_info = f"{lead_name} ({lead_title})"
+        elif lead_company:
+            lead_info = f"{lead_name} @ {lead_company}"
+
+        blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Lead:* {lead_info}\n\nWhy doesn't this prospect match your ICP?"
+                }
+            },
+            {
+                "type": "input",
+                "block_id": "not_icp_notes_input",
+                "optional": True,
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "not_icp_notes_text",
+                    "multiline": True,
+                    "placeholder": {
+                        "type": "plain_text",
+                        "text": "Optional: Add notes for ICP improvement..."
+                    }
+                },
+                "label": {"type": "plain_text", "text": "Notes (optional)"}
+            }
+        ]
+
+        try:
+            await self._client.views_open(
+                trigger_id=trigger_id,
+                view={
+                    "type": "modal",
+                    "callback_id": "not_icp_submit",
+                    "title": {"type": "plain_text", "text": "Not ICP"},
+                    "submit": {"type": "plain_text", "text": "Confirm"},
+                    "close": {"type": "plain_text", "text": "Cancel"},
+                    "blocks": blocks,
+                    "private_metadata": str(draft_id),
+                }
+            )
+        except SlackApiError as e:
+            raise SlackError(f"Failed to open Not ICP modal: {e.response['error']}") from e
+        except Exception as e:
+            raise SlackError(f"Failed to open Not ICP modal: {e}") from e
 
 
 # Global bot instance

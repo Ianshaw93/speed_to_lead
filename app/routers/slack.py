@@ -16,7 +16,16 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database import async_session_factory
-from app.models import Conversation, Draft, DraftStatus, MessageDirection, MessageLog, Prospect
+from app.models import (
+    Conversation,
+    Draft,
+    DraftStatus,
+    ICPFeedback,
+    MessageDirection,
+    MessageLog,
+    Prospect,
+    ReplyClassification,
+)
 from app.services.deepseek import generate_reply_draft
 from app.services.heyreach import get_heyreach_client, HeyReachError
 from app.models import Conversation
@@ -828,6 +837,204 @@ async def _process_followup_submit(
         await slack_bot.send_confirmation(f"Error saving follow-ups: {e}")
 
 
+# =============================================================================
+# Classification Handlers
+# =============================================================================
+
+
+async def handle_classify_positive(
+    draft_id: uuid.UUID,
+    message_ts: str,
+    slack_user_id: str,
+    background_tasks: BackgroundTasks,
+) -> None:
+    """Handle classify_positive action - mark reply as positive.
+
+    Args:
+        draft_id: The draft to classify.
+        message_ts: Slack message timestamp for updates.
+        slack_user_id: ID of the Slack user who clicked the button.
+        background_tasks: FastAPI background tasks.
+    """
+    background_tasks.add_task(
+        _process_classification, draft_id, message_ts, ReplyClassification.POSITIVE, slack_user_id
+    )
+
+
+async def handle_classify_not_interested(
+    draft_id: uuid.UUID,
+    message_ts: str,
+    slack_user_id: str,
+    background_tasks: BackgroundTasks,
+) -> None:
+    """Handle classify_not_interested action.
+
+    Args:
+        draft_id: The draft to classify.
+        message_ts: Slack message timestamp for updates.
+        slack_user_id: ID of the Slack user who clicked the button.
+        background_tasks: FastAPI background tasks.
+    """
+    background_tasks.add_task(
+        _process_classification, draft_id, message_ts, ReplyClassification.NOT_INTERESTED, slack_user_id
+    )
+
+
+async def handle_classify_not_icp(
+    draft_id: uuid.UUID,
+    trigger_id: str,
+) -> None:
+    """Handle classify_not_icp action - open modal for optional notes.
+
+    Args:
+        draft_id: The draft to classify.
+        trigger_id: Slack trigger ID for opening modal.
+    """
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(Draft)
+            .options(selectinload(Draft.conversation))
+            .where(Draft.id == draft_id)
+        )
+        draft = result.scalar_one_or_none()
+
+        if not draft:
+            logger.error(f"Draft {draft_id} not found for Not ICP classification")
+            slack_bot = get_slack_bot()
+            await slack_bot.send_confirmation("Error: Draft not found.")
+            return
+
+        conversation = draft.conversation
+
+        # Get prospect info for modal
+        normalized_url = conversation.linkedin_profile_url.lower().strip().rstrip("/")
+        if "?" in normalized_url:
+            normalized_url = normalized_url.split("?")[0]
+
+        prospect_result = await session.execute(
+            select(Prospect).where(Prospect.linkedin_url == normalized_url)
+        )
+        prospect = prospect_result.scalar_one_or_none()
+
+        lead_title = prospect.job_title if prospect else None
+        lead_company = prospect.company_name if prospect else None
+
+        slack_bot = get_slack_bot()
+        await slack_bot.open_not_icp_modal(
+            trigger_id=trigger_id,
+            draft_id=draft_id,
+            lead_name=conversation.lead_name,
+            lead_title=lead_title,
+            lead_company=lead_company,
+        )
+
+
+async def _process_classification(
+    draft_id: uuid.UUID,
+    message_ts: str,
+    classification: ReplyClassification,
+    slack_user_id: str,
+    notes: str | None = None,
+) -> None:
+    """Background task to process classification.
+
+    Args:
+        draft_id: The draft to classify.
+        message_ts: Slack message timestamp for updates (may be empty for modal).
+        classification: The classification to apply.
+        slack_user_id: ID of the Slack user who classified.
+        notes: Optional notes (for Not ICP).
+    """
+    from datetime import datetime, timezone
+
+    try:
+        async with async_session_factory() as session:
+            result = await session.execute(
+                select(Draft)
+                .options(selectinload(Draft.conversation))
+                .where(Draft.id == draft_id)
+            )
+            draft = result.scalar_one_or_none()
+
+            if not draft:
+                logger.error(f"Draft {draft_id} not found for classification")
+                if message_ts:
+                    slack_bot = get_slack_bot()
+                    await slack_bot.send_confirmation("Error: Draft not found.")
+                return
+
+            # Update draft classification
+            draft.classification = classification
+            draft.classified_at = datetime.now(timezone.utc)
+
+            # If Not ICP, create ICPFeedback record
+            if classification == ReplyClassification.NOT_ICP:
+                conversation = draft.conversation
+
+                # Get prospect info
+                normalized_url = conversation.linkedin_profile_url.lower().strip().rstrip("/")
+                if "?" in normalized_url:
+                    normalized_url = normalized_url.split("?")[0]
+
+                prospect_result = await session.execute(
+                    select(Prospect).where(Prospect.linkedin_url == normalized_url)
+                )
+                prospect = prospect_result.scalar_one_or_none()
+
+                feedback = ICPFeedback(
+                    lead_name=conversation.lead_name,
+                    linkedin_url=normalized_url,
+                    job_title=prospect.job_title if prospect else None,
+                    company_name=prospect.company_name if prospect else None,
+                    original_icp_match=prospect.icp_match if prospect else None,
+                    original_icp_reason=prospect.icp_reason if prospect else None,
+                    notes=notes,
+                    marked_by_slack_user=slack_user_id,
+                    draft_id=draft_id,
+                )
+                session.add(feedback)
+                logger.info(f"Created ICPFeedback for draft {draft_id}")
+
+            await session.commit()
+
+            # Send confirmation
+            classification_labels = {
+                ReplyClassification.POSITIVE: "\U0001f44d Positive Reply",
+                ReplyClassification.NOT_INTERESTED: "\U0001f44e Not Interested",
+                ReplyClassification.NOT_ICP: "\U0001f6ab Not ICP",
+            }
+            label = classification_labels.get(classification, str(classification.value))
+
+            slack_bot = get_slack_bot()
+            await slack_bot.send_confirmation(f"Classified as: {label}")
+
+            logger.info(f"Classified draft {draft_id} as {classification.value}")
+
+    except Exception as e:
+        logger.error(f"Error classifying draft {draft_id}: {e}", exc_info=True)
+        slack_bot = get_slack_bot()
+        await slack_bot.send_confirmation(f"Error classifying: {e}")
+
+
+async def handle_not_icp_modal_submit(
+    draft_id: uuid.UUID,
+    notes: str | None,
+    slack_user_id: str,
+    background_tasks: BackgroundTasks,
+) -> None:
+    """Handle Not ICP modal submission.
+
+    Args:
+        draft_id: The draft to classify.
+        notes: Optional notes from the modal.
+        slack_user_id: ID of the Slack user who submitted.
+        background_tasks: FastAPI background tasks.
+    """
+    background_tasks.add_task(
+        _process_classification, draft_id, "", ReplyClassification.NOT_ICP, slack_user_id, notes
+    )
+
+
 @router.post("/interactions")
 async def slack_interactions(
     request: Request,
@@ -884,6 +1091,9 @@ async def slack_interactions(
             logger.error(f"Invalid draft_id: {value_str}")
             return {"ok": True}
 
+        # Get slack user ID for classification tracking
+        slack_user_id = payload.get("user", {}).get("id", "unknown")
+
         # Route to appropriate handler
         if action_id == "approve":
             await handle_approve(draft_id, message_ts, background_tasks)
@@ -896,6 +1106,13 @@ async def slack_interactions(
         elif action_id.startswith("snooze_"):
             duration = action_id.replace("snooze_", "")
             await handle_snooze(draft_id, message_ts, duration, background_tasks)
+        # Classification actions
+        elif action_id == "classify_positive":
+            await handle_classify_positive(draft_id, message_ts, slack_user_id, background_tasks)
+        elif action_id == "classify_not_interested":
+            await handle_classify_not_interested(draft_id, message_ts, slack_user_id, background_tasks)
+        elif action_id == "classify_not_icp":
+            await handle_classify_not_icp(draft_id, trigger_id)
         else:
             logger.warning(f"Unknown action_id: {action_id}")
 
@@ -942,6 +1159,24 @@ async def slack_interactions(
 
             if edited_text:
                 await handle_modal_submit(draft_id, edited_text, background_tasks)
+
+        # Handle Not ICP modal submission
+        elif callback_id == "not_icp_submit":
+            try:
+                draft_id = uuid.UUID(private_metadata)
+            except ValueError:
+                logger.error(f"Invalid draft_id in metadata: {private_metadata}")
+                return {"ok": True}
+
+            # Extract notes from view values (optional)
+            notes = (
+                values.get("not_icp_notes_input", {})
+                .get("not_icp_notes_text", {})
+                .get("value")
+            )
+
+            slack_user_id = payload.get("user", {}).get("id", "unknown")
+            await handle_not_icp_modal_submit(draft_id, notes, slack_user_id, background_tasks)
 
     return {"ok": True}
 

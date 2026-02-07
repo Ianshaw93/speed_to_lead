@@ -33,6 +33,7 @@ try:
     logger.info("Services imported")
 
     from app.routers.slack import router as slack_router
+    from app.routers.metrics import router as metrics_router
     logger.info("Routers imported")
 except Exception as e:
     logger.error(f"Import failed: {e}", exc_info=True)
@@ -62,6 +63,7 @@ app = FastAPI(
 
 # Include routers
 app.include_router(slack_router)
+app.include_router(metrics_router)
 
 
 @app.middleware("http")
@@ -176,7 +178,19 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
                 await session.flush()  # Get the ID
                 logger.info(f"Created conversation {conversation.id}")
 
-            # 2. Log the inbound message
+            # 2. Detect if this is the first reply (before logging this message)
+            from sqlalchemy import func
+            inbound_count_result = await session.execute(
+                select(func.count(MessageLog.id)).where(
+                    MessageLog.conversation_id == conversation.id,
+                    MessageLog.direction == MessageDirection.INBOUND,
+                )
+            )
+            inbound_count = inbound_count_result.scalar()
+            is_first_reply = inbound_count == 0
+            logger.info(f"First reply detection: inbound_count={inbound_count}, is_first_reply={is_first_reply}")
+
+            # 2.5. Log the inbound message
             message_log = MessageLog(
                 conversation_id=conversation.id,
                 direction=MessageDirection.INBOUND,
@@ -184,7 +198,7 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
             )
             session.add(message_log)
 
-            # 2.5. Check if prospect should be removed from follow-up list
+            # 2.6. Check if prospect should be removed from follow-up list
             # (if they replied within 24h of being added)
             lead_profile_url_for_followup = payload.lead.profile_url if payload.lead else None
             if lead_profile_url_for_followup:
@@ -224,6 +238,7 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
                 ai_draft=draft_result.reply,
                 funnel_stage=draft_result.detected_stage,
                 stage_reasoning=draft_result.stage_reasoning,
+                is_first_reply=is_first_reply,
             )
             print(f"Slack notification sent, ts: {slack_ts}", flush=True)
             logger.info(f"Sent Slack notification, ts: {slack_ts}")
@@ -235,6 +250,7 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
                 status=DraftStatus.PENDING,
                 ai_draft=draft_result.reply,
                 slack_message_ts=slack_ts,
+                is_first_reply=is_first_reply,
             )
             session.add(draft)
 

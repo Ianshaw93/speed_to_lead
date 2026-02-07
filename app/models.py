@@ -44,6 +44,14 @@ class FunnelStage(str, enum.Enum):
     REGENERATION = "regeneration"  # Re-engaging after drop-off
 
 
+class ReplyClassification(str, enum.Enum):
+    """Classification of a prospect's reply for metrics tracking."""
+
+    POSITIVE = "positive"  # First reply was positive
+    NOT_INTERESTED = "not_interested"  # Prospect not interested
+    NOT_ICP = "not_icp"  # Prospect doesn't match ICP
+
+
 class ProspectSource(str, enum.Enum):
     """Source of a prospect."""
 
@@ -125,6 +133,20 @@ class Draft(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    # Classification for metrics
+    is_first_reply: Mapped[bool] = mapped_column(default=False)
+    classification: Mapped[ReplyClassification | None] = mapped_column(
+        Enum(
+            ReplyClassification,
+            name="reply_classification",
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        nullable=True,
+    )
+    classified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -193,6 +215,7 @@ class Prospect(Base):
     company_industry: Mapped[str | None] = mapped_column(String(255), nullable=True)
     location: Mapped[str | None] = mapped_column(String(255), nullable=True)
     headline: Mapped[str | None] = mapped_column(Text, nullable=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
 
     # Source tracking
     source_type: Mapped[ProspectSource] = mapped_column(
@@ -249,3 +272,42 @@ class Prospect(Base):
 
     # Relationships
     conversation: Mapped["Conversation | None"] = relationship()
+
+
+class ICPFeedback(Base):
+    """Feedback for ICP refinement when a prospect is marked as Not ICP.
+
+    This data is exported to multichannel-outreach for ICP analysis and improvement.
+    """
+
+    __tablename__ = "icp_feedback"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    # Lead info snapshot
+    lead_name: Mapped[str] = mapped_column(String(255))
+    linkedin_url: Mapped[str] = mapped_column(String(500), index=True)
+    job_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    company_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # Original ICP assessment (from Prospect table)
+    original_icp_match: Mapped[bool | None] = mapped_column(nullable=True)
+    original_icp_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # User feedback
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    marked_by_slack_user: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    # Link to draft that was classified
+    draft_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("drafts.id"),
+        nullable=True,
+        index=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
