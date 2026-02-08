@@ -1049,8 +1049,10 @@ async def slack_interactions(
     Slack expects a response within 3 seconds, so slow operations
     are handled in background tasks.
     """
+    print("=== SLACK INTERACTION RECEIVED ===", flush=True)
     # Verify signature
     body = await verify_slack_signature(request)
+    print(f"Signature verified, body length: {len(body)}", flush=True)
 
     # Parse payload
     payload = parse_slack_payload(body)
@@ -1069,6 +1071,7 @@ async def slack_interactions(
         value_str = action.get("value", "")
         message_ts = payload.get("message", {}).get("ts", "")
         trigger_id = payload.get("trigger_id", "")
+        print(f"Action: {action_id}, value: {value_str[:50] if value_str else 'none'}", flush=True)
 
         # Handle follow-up configuration actions (use conversation_id)
         if action_id in ("configure_followups", "skip_followups"):
