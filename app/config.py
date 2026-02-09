@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     # Slack
     slack_bot_token: str = ""
     slack_channel_id: str = ""
+    slack_metrics_channel_id: str = ""  # For daily/weekly reports (falls back to slack_channel_id)
     slack_signing_secret: str = ""
 
     # Database

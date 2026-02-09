@@ -2,10 +2,11 @@
 
 import enum
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Enum, ForeignKey, String, Text
+from sqlalchemy import JSON, Date, DateTime, Enum, ForeignKey, Numeric, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -310,4 +311,54 @@ class ICPFeedback(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class DailyMetrics(Base):
+    """Daily aggregated metrics for reporting.
+
+    Stores metrics from all three projects:
+    - speed_to_lead: Conversation and funnel metrics (calculated from DB)
+    - multichannel-outreach: Outreach pipeline metrics (POSTed)
+    - contentCreator: Content creation metrics (POSTed)
+    """
+
+    __tablename__ = "daily_metrics"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    date: Mapped[date] = mapped_column(Date, unique=True, index=True)
+
+    # Outreach metrics (from multichannel-outreach)
+    posts_scraped: Mapped[int] = mapped_column(default=0)
+    profiles_scraped: Mapped[int] = mapped_column(default=0)
+    icp_qualified: Mapped[int] = mapped_column(default=0)
+    heyreach_uploaded: Mapped[int] = mapped_column(default=0)
+    apify_cost: Mapped[Decimal] = mapped_column(Numeric(10, 4), default=Decimal("0"))
+    deepseek_cost: Mapped[Decimal] = mapped_column(Numeric(10, 4), default=Decimal("0"))
+
+    # Content metrics (from contentCreator)
+    content_drafts_created: Mapped[int] = mapped_column(default=0)
+    content_drafts_scheduled: Mapped[int] = mapped_column(default=0)
+    content_drafts_posted: Mapped[int] = mapped_column(default=0)
+    hooks_generated: Mapped[int] = mapped_column(default=0)
+    ideas_added: Mapped[int] = mapped_column(default=0)
+
+    # Speed metrics
+    avg_speed_to_lead_minutes: Mapped[int | None] = mapped_column(nullable=True)
+    speed_to_lead_count: Mapped[int] = mapped_column(default=0)
+    avg_speed_to_reply_minutes: Mapped[int | None] = mapped_column(nullable=True)
+    speed_to_reply_count: Mapped[int] = mapped_column(default=0)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
     )

@@ -220,3 +220,127 @@ class TestSlackBot:
         with patch("app.services.slack.AsyncWebClient"):
             bot = SlackBot(bot_token="my_token", channel_id="my_channel")
             assert bot._channel_id == "my_channel"
+
+
+class TestReportBlocksWithSpeedMetrics:
+    """Tests for report block formatting with speed metrics."""
+
+    def test_build_daily_report_with_speed_metrics(self):
+        """Should include speed metrics in daily report."""
+        from datetime import date
+        from app.services.slack import build_daily_report_blocks
+
+        metrics = {
+            "outreach": {
+                "profiles_scraped": 100,
+                "icp_qualified": 40,
+                "heyreach_uploaded": 35,
+                "costs": {"apify": 1.50, "deepseek": 0.30},
+            },
+            "conversations": {
+                "new": 5,
+                "drafts_approved": 10,
+                "classifications": {"positive": 3, "not_interested": 1, "not_icp": 1},
+            },
+            "funnel": {
+                "positive_reply": 15,
+                "pitched": 8,
+                "booked": 2,
+            },
+            "content": {
+                "drafts_created": 3,
+                "drafts_scheduled": 2,
+                "drafts_posted": 1,
+            },
+            "speed_metrics": {
+                "speed_to_lead": {"avg_minutes": 135, "count": 12},
+                "speed_to_reply": {"avg_minutes": 45, "count": 28},
+            },
+        }
+
+        blocks = build_daily_report_blocks(date(2026, 2, 9), metrics)
+        block_text = str(blocks)
+
+        # Should include speed metrics section
+        assert "Response Speed" in block_text or "Speed to Lead" in block_text
+        assert "2h 15m" in block_text  # 135 minutes formatted
+        assert "45m" in block_text  # 45 minutes formatted
+        assert "12" in block_text  # count
+        assert "28" in block_text  # count
+
+    def test_build_daily_report_no_speed_metrics(self):
+        """Should handle missing speed metrics gracefully."""
+        from datetime import date
+        from app.services.slack import build_daily_report_blocks
+
+        metrics = {
+            "outreach": {
+                "profiles_scraped": 100,
+                "icp_qualified": 40,
+                "heyreach_uploaded": 35,
+                "costs": {"apify": 1.50, "deepseek": 0.30},
+            },
+            "conversations": {
+                "new": 5,
+                "drafts_approved": 10,
+                "classifications": {"positive": 3},
+            },
+            "funnel": {
+                "positive_reply": 15,
+                "pitched": 8,
+                "booked": 2,
+            },
+            "content": {
+                "drafts_created": 3,
+                "drafts_scheduled": 2,
+                "drafts_posted": 1,
+            },
+            # No speed_metrics key
+        }
+
+        # Should not raise an error
+        blocks = build_daily_report_blocks(date(2026, 2, 9), metrics)
+        assert len(blocks) > 0
+
+    def test_build_weekly_report_with_speed_metrics(self):
+        """Should include speed metrics in weekly report."""
+        from datetime import date
+        from app.services.slack import build_weekly_report_blocks
+
+        metrics = {
+            "outreach": {
+                "profiles_scraped": 700,
+                "icp_qualified": 280,
+                "icp_rate": 40,
+                "heyreach_uploaded": 250,
+                "costs": {"apify": 10.50, "deepseek": 2.10, "total": 12.60},
+            },
+            "conversations": {
+                "new": 35,
+                "drafts_approved": 70,
+                "positive_reply_rate": 42.5,
+                "classifications": {"positive": 21, "not_interested": 7, "not_icp": 7},
+            },
+            "funnel": {
+                "positive_reply": 45,
+                "pitched": 25,
+                "calendar_sent": 10,
+                "booked": 8,
+            },
+            "content": {
+                "drafts_created": 21,
+                "drafts_scheduled": 14,
+                "drafts_posted": 7,
+            },
+            "speed_metrics": {
+                "speed_to_lead": {"avg_minutes": 180, "count": 45},
+                "speed_to_reply": {"avg_minutes": 52, "count": 120},
+            },
+        }
+
+        blocks = build_weekly_report_blocks(date(2026, 2, 3), date(2026, 2, 9), metrics)
+        block_text = str(blocks)
+
+        # Should include speed metrics
+        assert "3h" in block_text  # 180 minutes = 3h
+        assert "52m" in block_text or "52" in block_text  # 52 minutes

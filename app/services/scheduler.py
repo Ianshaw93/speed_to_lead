@@ -1,9 +1,10 @@
-"""Scheduler service for snooze reminders using APScheduler."""
+"""Scheduler service for snooze reminders and scheduled reports using APScheduler."""
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 
 
@@ -51,6 +52,57 @@ async def send_snooze_reminder(draft_id: uuid.UUID) -> None:
     # TODO: Re-send the draft notification with updated buttons
 
 
+async def send_daily_report_task() -> None:
+    """Send daily metrics report. Called by scheduler at 9am UK time."""
+    import logging
+    from app.database import async_session_factory
+    from app.services.reports import get_daily_dashboard_metrics
+    from app.services.slack import get_slack_bot
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        # Get yesterday's metrics (report covers previous day)
+        yesterday = date.today() - timedelta(days=1)
+
+        async with async_session_factory() as session:
+            metrics = await get_daily_dashboard_metrics(session, yesterday)
+
+        bot = get_slack_bot()
+        await bot.send_daily_report(yesterday, metrics)
+        logger.info(f"Daily report sent for {yesterday}")
+
+    except Exception as e:
+        logger.error(f"Failed to send daily report: {e}", exc_info=True)
+
+
+async def send_weekly_report_task() -> None:
+    """Send weekly metrics report. Called by scheduler on Monday 9am UK time."""
+    import logging
+    from app.database import async_session_factory
+    from app.services.reports import get_weekly_dashboard_metrics
+    from app.services.slack import get_slack_bot
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        # Get previous week's metrics (Monday to Sunday)
+        today = date.today()
+        # Today is Monday, so previous week is 7-13 days ago
+        end_of_week = today - timedelta(days=1)  # Sunday
+        start_of_week = end_of_week - timedelta(days=6)  # Monday
+
+        async with async_session_factory() as session:
+            metrics = await get_weekly_dashboard_metrics(session, start_of_week, end_of_week)
+
+        bot = get_slack_bot()
+        await bot.send_weekly_report(start_of_week, end_of_week, metrics)
+        logger.info(f"Weekly report sent for {start_of_week} to {end_of_week}")
+
+    except Exception as e:
+        logger.error(f"Failed to send weekly report: {e}", exc_info=True)
+
+
 class SchedulerService:
     """Service for managing scheduled tasks."""
 
@@ -60,9 +112,41 @@ class SchedulerService:
         self._jobs: dict[uuid.UUID, str] = {}  # draft_id -> job_id mapping
 
     def start(self) -> None:
-        """Start the scheduler."""
+        """Start the scheduler and register recurring jobs."""
         if not self._scheduler.running:
+            self._register_report_jobs()
             self._scheduler.start()
+
+    def _register_report_jobs(self) -> None:
+        """Register daily and weekly report jobs."""
+        # Daily report at 9am UK time (Europe/London handles DST)
+        self._scheduler.add_job(
+            send_daily_report_task,
+            trigger=CronTrigger(
+                hour=9,
+                minute=0,
+                timezone='Europe/London',
+            ),
+            id='daily_report',
+            name='Daily metrics report',
+            replace_existing=True,
+            misfire_grace_time=3600,  # 1 hour grace
+        )
+
+        # Weekly report on Monday 9am UK time
+        self._scheduler.add_job(
+            send_weekly_report_task,
+            trigger=CronTrigger(
+                day_of_week='mon',
+                hour=9,
+                minute=0,
+                timezone='Europe/London',
+            ),
+            id='weekly_report',
+            name='Weekly metrics report',
+            replace_existing=True,
+            misfire_grace_time=3600,  # 1 hour grace
+        )
 
     def shutdown(self, wait: bool = True) -> None:
         """Shut down the scheduler.

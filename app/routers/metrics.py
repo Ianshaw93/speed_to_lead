@@ -1,15 +1,23 @@
-"""Metrics API router for classification and ICP feedback data."""
+"""Metrics API router for classification, ICP feedback, and reporting data."""
 
 import logging
-from datetime import datetime, timezone
-from typing import Any
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import Draft, ICPFeedback, ReplyClassification
+from app.models import DailyMetrics, Draft, ICPFeedback, ReplyClassification
+from app.services.reports import (
+    get_daily_dashboard_metrics,
+    get_weekly_dashboard_metrics,
+    upsert_content_metrics,
+    upsert_multichannel_metrics,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -205,3 +213,171 @@ async def get_metrics_summary(
         "icp_feedback_records": icp_feedback_count,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+# =============================================================================
+# INGESTION ENDPOINTS - Called by external projects
+# =============================================================================
+
+
+class MultichannelMetricsPayload(BaseModel):
+    """Payload for multichannel-outreach metrics ingestion."""
+
+    metric_date: date | None = None  # Defaults to today
+    posts_scraped: int = 0
+    profiles_scraped: int = 0
+    icp_qualified: int = 0
+    heyreach_uploaded: int = 0
+    apify_cost: float = 0.0
+    deepseek_cost: float = 0.0
+
+
+class ContentMetricsPayload(BaseModel):
+    """Payload for contentCreator metrics ingestion."""
+
+    metric_date: date | None = None  # Defaults to today
+    drafts_created: int = 0
+    drafts_scheduled: int = 0
+    drafts_posted: int = 0
+    hooks_generated: int = 0
+    ideas_added: int = 0
+
+
+@router.post("/multichannel")
+async def ingest_multichannel_metrics(
+    payload: MultichannelMetricsPayload,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Ingest metrics from multichannel-outreach project.
+
+    Called after pipeline runs to record activity metrics.
+
+    Args:
+        payload: The metrics data.
+        session: Database session (injected).
+
+    Returns:
+        Confirmation with updated totals.
+    """
+    target_date = payload.metric_date or date.today()
+
+    metrics = await upsert_multichannel_metrics(
+        session=session,
+        target_date=target_date,
+        posts_scraped=payload.posts_scraped,
+        profiles_scraped=payload.profiles_scraped,
+        icp_qualified=payload.icp_qualified,
+        heyreach_uploaded=payload.heyreach_uploaded,
+        apify_cost=Decimal(str(payload.apify_cost)),
+        deepseek_cost=Decimal(str(payload.deepseek_cost)),
+    )
+    await session.commit()
+
+    logger.info(
+        f"Ingested multichannel metrics for {target_date}: "
+        f"profiles={payload.profiles_scraped}, icp={payload.icp_qualified}"
+    )
+
+    return {
+        "status": "ok",
+        "date": target_date.isoformat(),
+        "totals": {
+            "posts_scraped": metrics.posts_scraped,
+            "profiles_scraped": metrics.profiles_scraped,
+            "icp_qualified": metrics.icp_qualified,
+            "heyreach_uploaded": metrics.heyreach_uploaded,
+            "apify_cost": float(metrics.apify_cost),
+            "deepseek_cost": float(metrics.deepseek_cost),
+        },
+    }
+
+
+@router.post("/content")
+async def ingest_content_metrics(
+    payload: ContentMetricsPayload,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Ingest metrics from contentCreator project.
+
+    Called after content creation activities.
+
+    Args:
+        payload: The metrics data.
+        session: Database session (injected).
+
+    Returns:
+        Confirmation with updated totals.
+    """
+    target_date = payload.metric_date or date.today()
+
+    metrics = await upsert_content_metrics(
+        session=session,
+        target_date=target_date,
+        drafts_created=payload.drafts_created,
+        drafts_scheduled=payload.drafts_scheduled,
+        drafts_posted=payload.drafts_posted,
+        hooks_generated=payload.hooks_generated,
+        ideas_added=payload.ideas_added,
+    )
+    await session.commit()
+
+    logger.info(
+        f"Ingested content metrics for {target_date}: "
+        f"drafts={payload.drafts_created}, hooks={payload.hooks_generated}"
+    )
+
+    return {
+        "status": "ok",
+        "date": target_date.isoformat(),
+        "totals": {
+            "drafts_created": metrics.content_drafts_created,
+            "drafts_scheduled": metrics.content_drafts_scheduled,
+            "drafts_posted": metrics.content_drafts_posted,
+            "hooks_generated": metrics.hooks_generated,
+            "ideas_added": metrics.ideas_added,
+        },
+    }
+
+
+# =============================================================================
+# DASHBOARD ENDPOINT - Unified metrics view
+# =============================================================================
+
+
+@router.get("/dashboard")
+async def get_dashboard(
+    period: Literal["today", "yesterday", "week", "month"] = Query(
+        "today", description="Time period for metrics"
+    ),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Get unified dashboard metrics.
+
+    Combines data from all three projects for a complete view.
+
+    Args:
+        period: Time period - 'today', 'yesterday', 'week', or 'month'.
+        session: Database session (injected).
+
+    Returns:
+        Complete metrics for the specified period.
+    """
+    today = date.today()
+
+    if period == "today":
+        return await get_daily_dashboard_metrics(session, today)
+    elif period == "yesterday":
+        return await get_daily_dashboard_metrics(session, today - timedelta(days=1))
+    elif period == "week":
+        # Monday to Sunday (previous complete week if today is Monday, otherwise current week)
+        days_since_monday = today.weekday()
+        start_of_week = today - timedelta(days=days_since_monday)
+        end_of_week = start_of_week + timedelta(days=6)
+        return await get_weekly_dashboard_metrics(session, start_of_week, end_of_week)
+    elif period == "month":
+        # First day of current month to today
+        start_of_month = today.replace(day=1)
+        return await get_weekly_dashboard_metrics(session, start_of_month, today)
+
+    # Shouldn't reach here due to Literal type
+    return await get_daily_dashboard_metrics(session, today)

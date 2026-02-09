@@ -1,6 +1,7 @@
-"""Slack service for sending draft notifications."""
+"""Slack service for sending draft notifications and reports."""
 
 import uuid
+from datetime import date
 from typing import Any
 
 from slack_sdk.web.async_client import AsyncWebClient
@@ -8,6 +9,7 @@ from slack_sdk.errors import SlackApiError
 
 from app.config import settings
 from app.models import FunnelStage
+from app.services.reports import format_minutes
 
 
 class SlackError(Exception):
@@ -267,6 +269,246 @@ def parse_action_payload(payload: dict) -> tuple[str, uuid.UUID]:
         raise ValueError(f"Invalid action payload: {e}") from e
 
 
+def build_daily_report_blocks(
+    report_date: date,
+    metrics: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Build Slack Block Kit message for daily metrics report.
+
+    Args:
+        report_date: The date of the report.
+        metrics: Metrics dict from get_daily_dashboard_metrics.
+
+    Returns:
+        List of Slack Block Kit blocks.
+    """
+    outreach = metrics.get("outreach", {})
+    conversations = metrics.get("conversations", {})
+    funnel = metrics.get("funnel", {})
+    content = metrics.get("content", {})
+    costs = outreach.get("costs", {})
+    classifications = conversations.get("classifications", {})
+    speed_metrics = metrics.get("speed_metrics", {})
+
+    total_cost = costs.get("apify", 0) + costs.get("deepseek", 0)
+
+    # Extract speed metrics
+    speed_to_lead = speed_metrics.get("speed_to_lead")
+    speed_to_reply = speed_metrics.get("speed_to_reply")
+    stl_avg = format_minutes(speed_to_lead.get("avg_minutes") if speed_to_lead else None)
+    stl_count = speed_to_lead.get("count", 0) if speed_to_lead else 0
+    str_avg = format_minutes(speed_to_reply.get("avg_minutes") if speed_to_reply else None)
+    str_count = speed_to_reply.get("count", 0) if speed_to_reply else 0
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": f"Daily Metrics - {report_date.strftime('%b %d, %Y')}",
+                "emoji": True
+            }
+        },
+        {
+            "type": "divider"
+        },
+        {
+            "type": "section",
+            "fields": [
+                {
+                    "type": "mrkdwn",
+                    "text": (
+                        "*Outreach*\n"
+                        f"Profiles: {outreach.get('profiles_scraped', 0)}\n"
+                        f"ICP Qualified: {outreach.get('icp_qualified', 0)}\n"
+                        f"Uploaded: {outreach.get('heyreach_uploaded', 0)}"
+                    )
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": (
+                        "*Conversations*\n"
+                        f"New: {conversations.get('new', 0)}\n"
+                        f"Approved: {conversations.get('drafts_approved', 0)}\n"
+                        f"Positive: {classifications.get('positive', 0)}"
+                    )
+                }
+            ]
+        },
+        {
+            "type": "section",
+            "fields": [
+                {
+                    "type": "mrkdwn",
+                    "text": (
+                        "*Funnel*\n"
+                        f"Positive Reply: {funnel.get('positive_reply', 0)}\n"
+                        f"Pitched: {funnel.get('pitched', 0)}\n"
+                        f"Booked: {funnel.get('booked', 0)}"
+                    )
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": (
+                        "*Content*\n"
+                        f"Created: {content.get('drafts_created', 0)}\n"
+                        f"Scheduled: {content.get('drafts_scheduled', 0)}\n"
+                        f"Posted: {content.get('drafts_posted', 0)}"
+                    )
+                }
+            ]
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*Response Speed*\n"
+                    f"Speed to Lead: {stl_avg} avg ({stl_count} replies)\n"
+                    f"Our Response: {str_avg} avg ({str_count} sent)"
+                )
+            }
+        },
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f"Cost: ${total_cost:.2f}"
+                }
+            ]
+        }
+    ]
+
+    return blocks
+
+
+def build_weekly_report_blocks(
+    start_date: date,
+    end_date: date,
+    metrics: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Build Slack Block Kit message for weekly metrics report.
+
+    Args:
+        start_date: Start of the week.
+        end_date: End of the week.
+        metrics: Metrics dict from get_weekly_dashboard_metrics.
+
+    Returns:
+        List of Slack Block Kit blocks.
+    """
+    outreach = metrics.get("outreach", {})
+    conversations = metrics.get("conversations", {})
+    funnel = metrics.get("funnel", {})
+    content = metrics.get("content", {})
+    costs = outreach.get("costs", {})
+    classifications = conversations.get("classifications", {})
+    speed_metrics = metrics.get("speed_metrics", {})
+
+    # Calculate conversion rates
+    positive = classifications.get("positive", 0)
+    pitched = funnel.get("pitched", 0)
+    calendar_sent = funnel.get("calendar_sent", 0)
+    booked = funnel.get("booked", 0)
+
+    positive_to_pitched = f"{(pitched / positive * 100):.0f}%" if positive > 0 else "N/A"
+    pitched_to_calendar = f"{(calendar_sent / pitched * 100):.0f}%" if pitched > 0 else "N/A"
+    calendar_to_booked = f"{(booked / calendar_sent * 100):.0f}%" if calendar_sent > 0 else "N/A"
+
+    # Extract speed metrics
+    speed_to_lead = speed_metrics.get("speed_to_lead")
+    speed_to_reply = speed_metrics.get("speed_to_reply")
+    stl_avg = format_minutes(speed_to_lead.get("avg_minutes") if speed_to_lead else None)
+    stl_count = speed_to_lead.get("count", 0) if speed_to_lead else 0
+    str_avg = format_minutes(speed_to_reply.get("avg_minutes") if speed_to_reply else None)
+    str_count = speed_to_reply.get("count", 0) if speed_to_reply else 0
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": f"Weekly Summary - Week of {start_date.strftime('%b %d, %Y')}",
+                "emoji": True
+            }
+        },
+        {
+            "type": "divider"
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*Outreach Pipeline*\n"
+                    f"* Profiles Scraped: {outreach.get('profiles_scraped', 0):,}\n"
+                    f"* ICP Qualified: {outreach.get('icp_qualified', 0):,} ({outreach.get('icp_rate', 0)}%)\n"
+                    f"* Uploaded to HeyReach: {outreach.get('heyreach_uploaded', 0):,}"
+                )
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*Conversations*\n"
+                    f"* New: {conversations.get('new', 0)}\n"
+                    f"* Positive Reply Rate: {conversations.get('positive_reply_rate', 0)}%"
+                )
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*Funnel Performance*\n"
+                    f"* Positive -> Pitched: {positive_to_pitched}\n"
+                    f"* Pitched -> Calendar: {pitched_to_calendar}\n"
+                    f"* Calendar -> Booked: {calendar_to_booked}\n"
+                    f"* Total Booked: {booked}"
+                )
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*Response Speed*\n"
+                    f"* Speed to Lead: {stl_avg} avg ({stl_count} replies)\n"
+                    f"* Our Response: {str_avg} avg ({str_count} sent)"
+                )
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*Content*\n"
+                    f"* Created: {content.get('drafts_created', 0)} | "
+                    f"Scheduled: {content.get('drafts_scheduled', 0)} | "
+                    f"Posted: {content.get('drafts_posted', 0)}"
+                )
+            }
+        },
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f"Weekly Cost: ${costs.get('total', 0):.2f}"
+                }
+            ]
+        }
+    ]
+
+    return blocks
+
+
 class SlackBot:
     """Client for sending Slack notifications."""
 
@@ -274,15 +516,22 @@ class SlackBot:
         self,
         bot_token: str | None = None,
         channel_id: str | None = None,
+        metrics_channel_id: str | None = None,
     ):
         """Initialize the Slack bot.
 
         Args:
             bot_token: Slack bot token. Defaults to settings value.
-            channel_id: Channel ID to send messages to. Defaults to settings value.
+            channel_id: Channel ID for draft notifications. Defaults to settings value.
+            metrics_channel_id: Channel ID for metrics reports. Defaults to settings value.
         """
         self._bot_token = bot_token or settings.slack_bot_token
         self._channel_id = channel_id or settings.slack_channel_id
+        self._metrics_channel_id = (
+            metrics_channel_id
+            or settings.slack_metrics_channel_id
+            or self._channel_id
+        )
         self._client = AsyncWebClient(token=self._bot_token)
 
     async def send_draft_notification(
@@ -668,6 +917,68 @@ class SlackBot:
             raise SlackError(f"Failed to open Not ICP modal: {e.response['error']}") from e
         except Exception as e:
             raise SlackError(f"Failed to open Not ICP modal: {e}") from e
+
+    async def send_daily_report(
+        self,
+        report_date: date,
+        metrics: dict[str, Any],
+    ) -> str:
+        """Send daily metrics report to Slack.
+
+        Args:
+            report_date: The date of the report.
+            metrics: Metrics dict from get_daily_dashboard_metrics.
+
+        Returns:
+            The Slack message timestamp.
+
+        Raises:
+            SlackError: If sending fails.
+        """
+        try:
+            blocks = build_daily_report_blocks(report_date, metrics)
+            response = await self._client.chat_postMessage(
+                channel=self._metrics_channel_id,
+                blocks=blocks,
+                text=f"Daily Metrics - {report_date.strftime('%b %d, %Y')}",
+            )
+            return response["ts"]
+        except SlackApiError as e:
+            raise SlackError(f"Failed to send daily report: {e.response['error']}") from e
+        except Exception as e:
+            raise SlackError(f"Failed to send daily report: {e}") from e
+
+    async def send_weekly_report(
+        self,
+        start_date: date,
+        end_date: date,
+        metrics: dict[str, Any],
+    ) -> str:
+        """Send weekly metrics report to Slack.
+
+        Args:
+            start_date: Start of the week.
+            end_date: End of the week.
+            metrics: Metrics dict from get_weekly_dashboard_metrics.
+
+        Returns:
+            The Slack message timestamp.
+
+        Raises:
+            SlackError: If sending fails.
+        """
+        try:
+            blocks = build_weekly_report_blocks(start_date, end_date, metrics)
+            response = await self._client.chat_postMessage(
+                channel=self._metrics_channel_id,
+                blocks=blocks,
+                text=f"Weekly Summary - Week of {start_date.strftime('%b %d, %Y')}",
+            )
+            return response["ts"]
+        except SlackApiError as e:
+            raise SlackError(f"Failed to send weekly report: {e.response['error']}") from e
+        except Exception as e:
+            raise SlackError(f"Failed to send weekly report: {e}") from e
 
 
 # Global bot instance

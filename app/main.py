@@ -46,10 +46,18 @@ logger.info("All imports successful")
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     # Startup
-    yield
-    # Shutdown - cleanup resources
-    from app.services.heyreach import _client as heyreach_client
+    from app.services.scheduler import get_scheduler_service
+    scheduler = get_scheduler_service()
+    scheduler.start()
+    logger.info("Scheduler started with daily/weekly report jobs")
 
+    yield
+
+    # Shutdown - cleanup resources
+    scheduler.shutdown(wait=False)
+    logger.info("Scheduler shut down")
+
+    from app.services.heyreach import _client as heyreach_client
     if heyreach_client:
         await heyreach_client.close()
 
