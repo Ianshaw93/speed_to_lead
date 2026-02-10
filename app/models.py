@@ -260,6 +260,12 @@ class Prospect(Base):
         index=True,
     )
 
+    # Positive reply tracking
+    positive_reply_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    positive_reply_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
