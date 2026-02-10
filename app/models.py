@@ -268,6 +268,14 @@ class Prospect(Base):
     )
     positive_reply_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Funnel stage tracking
+    pitched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    booked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

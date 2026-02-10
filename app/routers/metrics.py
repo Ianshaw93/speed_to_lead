@@ -489,29 +489,24 @@ async def get_funnel_summary(
     )
     positive_from_notes = positive_notes_result.scalar() or 0
 
-    # Pitched (from conversation funnel_stage)
+    # Pitched (from Prospect.pitched_at)
     pitched_result = await session.execute(
-        select(func.count(Conversation.id)).where(
-            Conversation.funnel_stage == FunnelStage.PITCHED
+        select(func.count(Prospect.id)).where(
+            Prospect.pitched_at.isnot(None)
         )
     )
     pitched = pitched_result.scalar() or 0
 
-    # Calendar sent
-    calendar_sent_result = await session.execute(
-        select(func.count(Conversation.id)).where(
-            Conversation.funnel_stage == FunnelStage.CALENDAR_SENT
-        )
-    )
-    calendar_sent = calendar_sent_result.scalar() or 0
-
-    # Booked
+    # Booked (from Prospect.booked_at)
     booked_result = await session.execute(
-        select(func.count(Conversation.id)).where(
-            Conversation.funnel_stage == FunnelStage.BOOKED
+        select(func.count(Prospect.id)).where(
+            Prospect.booked_at.isnot(None)
         )
     )
     booked = booked_result.scalar() or 0
+
+    # Calendar sent (pitched but not booked yet - for now same as pitched)
+    calendar_sent = pitched  # Will refine later if needed
 
     # Calculate conversion rates
     total_positive = positive_replies + positive_from_notes
@@ -783,6 +778,81 @@ async def backfill_positive_replies(
             "not_found": not_found,
             "already_set": already_set,
             "total_rows": len(rows),
+        },
+        "details": results,
+    }
+
+
+class FunnelStagePayload(BaseModel):
+    """Payload for updating funnel stages."""
+
+    pitched: list[str] = []  # LinkedIn URLs of pitched prospects
+    booked: list[str] = []  # LinkedIn URLs of booked prospects
+
+
+@router.post("/backfill/funnel-stages")
+async def backfill_funnel_stages(
+    payload: FunnelStagePayload,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Backfill funnel stage data (pitched_at, booked_at).
+
+    Args:
+        payload: Lists of LinkedIn URLs for each stage.
+        session: Database session (injected).
+
+    Returns:
+        Summary of updates.
+    """
+    from datetime import datetime, timezone
+
+    results = {"pitched": [], "booked": [], "not_found": []}
+
+    # Process pitched prospects
+    for url in payload.pitched:
+        normalized = normalize_linkedin_url(url)
+        result = await session.execute(
+            select(Prospect).where(Prospect.linkedin_url == normalized)
+        )
+        prospect = result.scalar_one_or_none()
+
+        if prospect:
+            if not prospect.pitched_at:
+                prospect.pitched_at = datetime.now(timezone.utc)
+            results["pitched"].append(prospect.full_name or normalized)
+        else:
+            results["not_found"].append(url)
+
+    # Process booked prospects
+    for url in payload.booked:
+        normalized = normalize_linkedin_url(url)
+        result = await session.execute(
+            select(Prospect).where(Prospect.linkedin_url == normalized)
+        )
+        prospect = result.scalar_one_or_none()
+
+        if prospect:
+            if not prospect.pitched_at:
+                prospect.pitched_at = datetime.now(timezone.utc)
+            if not prospect.booked_at:
+                prospect.booked_at = datetime.now(timezone.utc)
+            results["booked"].append(prospect.full_name or normalized)
+        else:
+            results["not_found"].append(url)
+
+    await session.commit()
+
+    logger.info(
+        f"Funnel backfill: {len(results['pitched'])} pitched, "
+        f"{len(results['booked'])} booked, {len(results['not_found'])} not found"
+    )
+
+    return {
+        "status": "ok",
+        "summary": {
+            "pitched": len(results["pitched"]),
+            "booked": len(results["booked"]),
+            "not_found": len(results["not_found"]),
         },
         "details": results,
     }
