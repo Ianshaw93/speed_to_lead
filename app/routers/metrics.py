@@ -432,15 +432,7 @@ async def find_pitched_conversations(
             continue
 
         for msg in convo.conversation_history:
-            # Check outbound messages only
-            is_outbound = (
-                msg.get("direction") == "outbound"
-                or msg.get("isInbound") is False
-                or msg.get("sender") == "me"
-            )
-            if not is_outbound:
-                continue
-
+            # Search ALL messages - conversation_history doesn't reliably mark direction
             content = msg.get("content") or msg.get("text") or msg.get("message") or ""
             if combined_pattern.search(content):
                 pitched.append({
