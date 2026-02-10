@@ -1155,3 +1155,85 @@ async def update_prospect(prospect_id: int, request: Request) -> dict:
         await session.commit()
 
         return {"status": "ok", "id": prospect_id}
+
+
+@app.get("/api/debug/speed-to-reply-breakdown")
+async def debug_speed_to_reply_breakdown() -> dict:
+    """Temporary debug endpoint: speed-to-reply broken down by UK time of inbound message."""
+    from datetime import timezone as tz
+    from zoneinfo import ZoneInfo
+
+    uk_tz = ZoneInfo("Europe/London")
+
+    async with async_session_factory() as session:
+        # Get all inbound messages
+        inbound_result = await session.execute(
+            select(MessageLog)
+            .where(MessageLog.direction == MessageDirection.INBOUND)
+            .order_by(MessageLog.conversation_id, MessageLog.sent_at)
+        )
+        inbound_messages = inbound_result.scalars().all()
+
+        all_pairs = []
+        daytime_pairs = []  # inbound before 11pm UK
+
+        for inbound in inbound_messages:
+            outbound_result = await session.execute(
+                select(MessageLog)
+                .where(
+                    MessageLog.conversation_id == inbound.conversation_id,
+                    MessageLog.direction == MessageDirection.OUTBOUND,
+                    MessageLog.sent_at > inbound.sent_at,
+                )
+                .order_by(MessageLog.sent_at)
+                .limit(1)
+            )
+            outbound = outbound_result.scalar_one_or_none()
+
+            if not outbound:
+                continue
+
+            inbound_sent = inbound.sent_at
+            outbound_sent = outbound.sent_at
+            if inbound_sent.tzinfo is None:
+                inbound_sent = inbound_sent.replace(tzinfo=tz.utc)
+            if outbound_sent.tzinfo is None:
+                outbound_sent = outbound_sent.replace(tzinfo=tz.utc)
+
+            delta_minutes = int((outbound_sent - inbound_sent).total_seconds() / 60)
+            if delta_minutes < 0:
+                continue
+
+            inbound_uk = inbound_sent.astimezone(uk_tz)
+
+            pair = {
+                "conversation_id": inbound.conversation_id,
+                "inbound_at_utc": inbound_sent.isoformat(),
+                "inbound_at_uk": inbound_uk.isoformat(),
+                "inbound_uk_hour": inbound_uk.hour,
+                "outbound_at_utc": outbound_sent.isoformat(),
+                "reply_minutes": delta_minutes,
+            }
+
+            all_pairs.append(pair)
+            if inbound_uk.hour < 23:  # before 11pm UK
+                daytime_pairs.append(pair)
+
+        def calc_stats(pairs):
+            if not pairs:
+                return {"count": 0, "avg_minutes": None}
+            total = sum(p["reply_minutes"] for p in pairs)
+            return {
+                "count": len(pairs),
+                "avg_minutes": total // len(pairs),
+                "median_minutes": sorted(p["reply_minutes"] for p in pairs)[len(pairs) // 2],
+                "min_minutes": min(p["reply_minutes"] for p in pairs),
+                "max_minutes": max(p["reply_minutes"] for p in pairs),
+            }
+
+        return {
+            "all_replies": calc_stats(all_pairs),
+            "daytime_only_before_11pm_uk": calc_stats(daytime_pairs),
+            "night_replies_after_11pm_uk": calc_stats([p for p in all_pairs if p not in daytime_pairs]),
+            "pairs": sorted(all_pairs, key=lambda p: p["reply_minutes"]),
+        }
