@@ -395,6 +395,88 @@ async def get_dashboard(
 
 
 # =============================================================================
+# PITCHED SEARCH - Find conversations where we pitched
+# =============================================================================
+
+
+@router.get("/pitched")
+async def find_pitched_conversations(
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Find conversations where we've pitched (sent booking invite).
+
+    Searches outbound messages for phrases like "I'd be open to" or "sometime".
+    """
+    import re
+
+    # Get all conversations with their history
+    result = await session.execute(
+        select(Conversation).where(Conversation.conversation_history.isnot(None))
+    )
+    conversations = result.scalars().all()
+
+    pitched = []
+    pitch_patterns = [
+        r"i'?d be open to",
+        r"sometime",
+        r"jump on a call",
+        r"schedule a",
+        r"book a",
+        r"calendly",
+        r"let'?s chat",
+    ]
+    combined_pattern = re.compile("|".join(pitch_patterns), re.IGNORECASE)
+
+    for convo in conversations:
+        if not convo.conversation_history:
+            continue
+
+        for msg in convo.conversation_history:
+            # Check outbound messages only
+            is_outbound = (
+                msg.get("direction") == "outbound"
+                or msg.get("isInbound") is False
+                or msg.get("sender") == "me"
+            )
+            if not is_outbound:
+                continue
+
+            content = msg.get("content") or msg.get("text") or msg.get("message") or ""
+            if combined_pattern.search(content):
+                pitched.append({
+                    "name": convo.lead_name,
+                    "linkedin_url": convo.linkedin_profile_url,
+                    "pitch_snippet": content[:200] + "..." if len(content) > 200 else content,
+                })
+                break  # Only count once per conversation
+
+    # Also check MessageLog for outbound messages
+    msg_result = await session.execute(
+        select(MessageLog, Conversation)
+        .join(Conversation, MessageLog.conversation_id == Conversation.id)
+        .where(MessageLog.direction == MessageDirection.OUTBOUND)
+    )
+    message_rows = msg_result.all()
+
+    seen_convos = {p["linkedin_url"] for p in pitched}
+    for msg_log, convo in message_rows:
+        if convo.linkedin_profile_url in seen_convos:
+            continue
+        if combined_pattern.search(msg_log.content):
+            pitched.append({
+                "name": convo.lead_name,
+                "linkedin_url": convo.linkedin_profile_url,
+                "pitch_snippet": msg_log.content[:200] + "..." if len(msg_log.content) > 200 else msg_log.content,
+            })
+            seen_convos.add(convo.linkedin_profile_url)
+
+    return {
+        "count": len(pitched),
+        "pitched": pitched,
+    }
+
+
+# =============================================================================
 # FUNNEL SUMMARY - Full pipeline metrics
 # =============================================================================
 
