@@ -783,6 +783,33 @@ async def backfill_positive_replies(
     }
 
 
+@router.post("/run-migration-011")
+async def run_migration_011(
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Manually run migration 011 to add pitched_at and booked_at columns."""
+    from sqlalchemy import text
+
+    # Check if columns already exist
+    result = await session.execute(text(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = 'prospects' AND column_name = 'pitched_at'"
+    ))
+    if result.fetchone():
+        return {"status": "ok", "message": "Columns already exist"}
+
+    # Add columns
+    await session.execute(text(
+        "ALTER TABLE prospects ADD COLUMN pitched_at TIMESTAMP WITH TIME ZONE"
+    ))
+    await session.execute(text(
+        "ALTER TABLE prospects ADD COLUMN booked_at TIMESTAMP WITH TIME ZONE"
+    ))
+    await session.commit()
+
+    return {"status": "ok", "message": "Columns added successfully"}
+
+
 class FunnelStagePayload(BaseModel):
     """Payload for updating funnel stages."""
 
