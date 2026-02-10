@@ -395,6 +395,95 @@ async def get_dashboard(
 
 
 # =============================================================================
+# FUNNEL SUMMARY - Full pipeline metrics
+# =============================================================================
+
+
+@router.get("/funnel")
+async def get_funnel_summary(
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Get full funnel metrics from initial outreach to booked meetings.
+
+    Returns counts at each stage of the sales funnel.
+    """
+    from app.models import FunnelStage
+
+    # Initial messages sent (prospects uploaded to HeyReach)
+    initial_sent_result = await session.execute(
+        select(func.count(Prospect.id)).where(
+            Prospect.heyreach_uploaded_at.isnot(None)
+        )
+    )
+    initial_sent = initial_sent_result.scalar() or 0
+
+    # Positive replies (from positive_reply_at field)
+    positive_replies_result = await session.execute(
+        select(func.count(Prospect.id)).where(
+            Prospect.positive_reply_at.isnot(None)
+        )
+    )
+    positive_replies = positive_replies_result.scalar() or 0
+
+    # Also count from positive_reply_notes (backfilled without timestamp)
+    positive_notes_result = await session.execute(
+        select(func.count(Prospect.id)).where(
+            Prospect.positive_reply_at.is_(None),
+            Prospect.positive_reply_notes.isnot(None),
+        )
+    )
+    positive_from_notes = positive_notes_result.scalar() or 0
+
+    # Pitched (from conversation funnel_stage)
+    pitched_result = await session.execute(
+        select(func.count(Conversation.id)).where(
+            Conversation.funnel_stage == FunnelStage.PITCHED
+        )
+    )
+    pitched = pitched_result.scalar() or 0
+
+    # Calendar sent
+    calendar_sent_result = await session.execute(
+        select(func.count(Conversation.id)).where(
+            Conversation.funnel_stage == FunnelStage.CALENDAR_SENT
+        )
+    )
+    calendar_sent = calendar_sent_result.scalar() or 0
+
+    # Booked
+    booked_result = await session.execute(
+        select(func.count(Conversation.id)).where(
+            Conversation.funnel_stage == FunnelStage.BOOKED
+        )
+    )
+    booked = booked_result.scalar() or 0
+
+    # Calculate conversion rates
+    total_positive = positive_replies + positive_from_notes
+
+    return {
+        "funnel": {
+            "initial_msgs_sent": initial_sent,
+            "positive_replies": total_positive,
+            "pitched": pitched,
+            "calendar_sent": calendar_sent,
+            "booked": booked,
+        },
+        "conversion_rates": {
+            "reply_rate": f"{(total_positive / initial_sent * 100):.1f}%" if initial_sent > 0 else "N/A",
+            "pitch_rate": f"{(pitched / total_positive * 100):.1f}%" if total_positive > 0 else "N/A",
+            "calendar_rate": f"{(calendar_sent / pitched * 100):.1f}%" if pitched > 0 else "N/A",
+            "book_rate": f"{(booked / calendar_sent * 100):.1f}%" if calendar_sent > 0 else "N/A",
+            "overall": f"{(booked / initial_sent * 100):.2f}%" if initial_sent > 0 else "N/A",
+        },
+        "details": {
+            "positive_with_timestamp": positive_replies,
+            "positive_from_backfill": positive_from_notes,
+        }
+    }
+
+
+# =============================================================================
 # BACKFILL ENDPOINT - For importing historical positive replies
 # =============================================================================
 
