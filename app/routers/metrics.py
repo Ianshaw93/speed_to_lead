@@ -1,5 +1,7 @@
 """Metrics API router for classification, ICP feedback, and reporting data."""
 
+import csv
+import io
 import logging
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -11,7 +13,16 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import DailyMetrics, Draft, ICPFeedback, ReplyClassification
+from app.models import (
+    Conversation,
+    DailyMetrics,
+    Draft,
+    ICPFeedback,
+    MessageDirection,
+    MessageLog,
+    Prospect,
+    ReplyClassification,
+)
 from app.services.reports import (
     get_daily_dashboard_metrics,
     get_weekly_dashboard_metrics,
@@ -381,3 +392,224 @@ async def get_dashboard(
 
     # Shouldn't reach here due to Literal type
     return await get_daily_dashboard_metrics(session, today)
+
+
+# =============================================================================
+# BACKFILL ENDPOINT - For importing historical positive replies
+# =============================================================================
+
+
+def normalize_linkedin_url(url: str) -> str:
+    """Normalize LinkedIn URL for consistent matching."""
+    if not url:
+        return ""
+    url = url.lower().strip().rstrip("/")
+    if "?" in url:
+        url = url.split("?")[0]
+    return url
+
+
+def parse_icp_match(notes: str) -> bool | None:
+    """Parse ICP match from notes field.
+
+    Returns:
+        True: "yes" variants
+        False: "no", "not icp", "employee", "no traction" variants
+        None: unclear/empty
+    """
+    if not notes:
+        return None
+
+    notes_lower = notes.lower().strip()
+
+    # Explicitly not ICP
+    not_icp_indicators = [
+        "not icp",
+        "no - ",
+        "no -",
+        "employee",
+        "not decision maker",
+        "no traction",
+        "between roles",
+        "blank profile",
+    ]
+    for indicator in not_icp_indicators:
+        if indicator in notes_lower:
+            return False
+
+    # Explicitly ICP / positive
+    if notes_lower.startswith("yes"):
+        return True
+
+    # Other indicators of positive
+    positive_indicators = [
+        "hot prospect",
+        "needs reply",
+        "just reply",
+        "follow up",
+    ]
+    for indicator in positive_indicators:
+        if indicator in notes_lower:
+            return True
+
+    # Unclear
+    if "unclear" in notes_lower:
+        return None
+
+    return None
+
+
+async def get_first_reply_timestamp(
+    session: AsyncSession, conversation_id
+) -> datetime | None:
+    """Get timestamp of first inbound message in a conversation."""
+    if not conversation_id:
+        return None
+
+    # Query MessageLog for first inbound message
+    result = await session.execute(
+        select(MessageLog)
+        .where(MessageLog.conversation_id == conversation_id)
+        .where(MessageLog.direction == MessageDirection.INBOUND)
+        .order_by(MessageLog.sent_at.asc())
+        .limit(1)
+    )
+    message = result.scalar_one_or_none()
+
+    if message:
+        return message.sent_at
+
+    # Fallback: check conversation_history JSON if no MessageLog
+    result = await session.execute(
+        select(Conversation).where(Conversation.id == conversation_id)
+    )
+    convo = result.scalar_one_or_none()
+
+    if convo and convo.conversation_history:
+        for msg in convo.conversation_history:
+            # Look for inbound messages in history
+            if msg.get("direction") == "inbound" or msg.get("isInbound"):
+                timestamp = msg.get("timestamp") or msg.get("sent_at")
+                if timestamp:
+                    if isinstance(timestamp, str):
+                        try:
+                            return datetime.fromisoformat(
+                                timestamp.replace("Z", "+00:00")
+                            )
+                        except ValueError:
+                            pass
+                    elif isinstance(timestamp, datetime):
+                        return timestamp
+
+    return None
+
+
+class PositiveReplyRow(BaseModel):
+    """A row from the positive replies CSV."""
+
+    linkedin_url: str
+    notes: str | None = None
+
+
+class BackfillPositiveRepliesPayload(BaseModel):
+    """Payload for backfilling positive replies."""
+
+    csv_data: str  # Raw CSV content
+
+
+@router.post("/backfill/positive-replies")
+async def backfill_positive_replies(
+    payload: BackfillPositiveRepliesPayload,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Backfill positive reply data from CSV.
+
+    Expects CSV with columns: Name, Last Name, LI Profile, Follow up needed?
+
+    Args:
+        payload: Contains CSV data as a string.
+        session: Database session (injected).
+
+    Returns:
+        Summary of backfill results.
+    """
+    # Parse CSV
+    csv_file = io.StringIO(payload.csv_data)
+    reader = csv.DictReader(csv_file)
+    rows = list(reader)
+
+    logger.info(f"Backfill: Processing {len(rows)} rows from CSV")
+
+    updated = 0
+    not_found = 0
+    already_set = 0
+    results = []
+
+    for row in rows:
+        linkedin_url = normalize_linkedin_url(row.get("LI Profile", ""))
+        if not linkedin_url:
+            continue
+
+        notes = row.get("Follow up needed?", "").strip()
+
+        # Find prospect
+        result = await session.execute(
+            select(Prospect).where(Prospect.linkedin_url == linkedin_url)
+        )
+        prospect = result.scalar_one_or_none()
+
+        if not prospect:
+            name = f"{row.get('Name', '')} {row.get('Last Name', '')}".strip()
+            results.append({"status": "not_found", "name": name, "url": linkedin_url})
+            not_found += 1
+            continue
+
+        # Skip if already has positive_reply_at set
+        if prospect.positive_reply_at:
+            already_set += 1
+            continue
+
+        # Get first reply timestamp from conversation if linked
+        reply_at = None
+        if prospect.conversation_id:
+            reply_at = await get_first_reply_timestamp(session, prospect.conversation_id)
+
+        # Update prospect
+        prospect.positive_reply_at = reply_at  # Will be None if no timestamp found
+        prospect.positive_reply_notes = notes if notes else None
+
+        # Update ICP match if not already set
+        if prospect.icp_match is None:
+            prospect.icp_match = parse_icp_match(notes)
+
+        updated += 1
+
+        name = (
+            prospect.full_name
+            or f"{prospect.first_name or ''} {prospect.last_name or ''}".strip()
+        )
+        results.append({
+            "status": "updated",
+            "name": name,
+            "url": linkedin_url,
+            "reply_at": reply_at.isoformat() if reply_at else None,
+            "icp_match": prospect.icp_match,
+        })
+
+    await session.commit()
+
+    logger.info(
+        f"Backfill complete: {updated} updated, {not_found} not found, "
+        f"{already_set} already set"
+    )
+
+    return {
+        "status": "ok",
+        "summary": {
+            "updated": updated,
+            "not_found": not_found,
+            "already_set": already_set,
+            "total_rows": len(rows),
+        },
+        "details": results,
+    }
