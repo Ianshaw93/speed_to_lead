@@ -515,6 +515,7 @@ class BackfillPositiveRepliesPayload(BaseModel):
     """Payload for backfilling positive replies."""
 
     csv_data: str  # Raw CSV content
+    create_missing: bool = False  # Create prospects if not found
 
 
 @router.post("/backfill/positive-replies")
@@ -533,6 +534,8 @@ async def backfill_positive_replies(
     Returns:
         Summary of backfill results.
     """
+    from app.models import ProspectSource
+
     # Parse CSV
     csv_file = io.StringIO(payload.csv_data)
     reader = csv.DictReader(csv_file)
@@ -541,6 +544,7 @@ async def backfill_positive_replies(
     logger.info(f"Backfill: Processing {len(rows)} rows from CSV")
 
     updated = 0
+    created = 0
     not_found = 0
     already_set = 0
     results = []
@@ -551,6 +555,8 @@ async def backfill_positive_replies(
             continue
 
         notes = row.get("Follow up needed?", "").strip()
+        first_name = row.get("Name", "").strip()
+        last_name = row.get("Last Name", "").strip()
 
         # Find prospect
         result = await session.execute(
@@ -559,10 +565,32 @@ async def backfill_positive_replies(
         prospect = result.scalar_one_or_none()
 
         if not prospect:
-            name = f"{row.get('Name', '')} {row.get('Last Name', '')}".strip()
-            results.append({"status": "not_found", "name": name, "url": linkedin_url})
-            not_found += 1
-            continue
+            if payload.create_missing:
+                # Create new prospect
+                full_name = f"{first_name} {last_name}".strip() or None
+                prospect = Prospect(
+                    linkedin_url=linkedin_url,
+                    full_name=full_name,
+                    first_name=first_name or None,
+                    last_name=last_name or None,
+                    source_type=ProspectSource.MANUAL,
+                    icp_match=parse_icp_match(notes),
+                    positive_reply_notes=notes if notes else None,
+                )
+                session.add(prospect)
+                created += 1
+                results.append({
+                    "status": "created",
+                    "name": full_name,
+                    "url": linkedin_url,
+                    "icp_match": prospect.icp_match,
+                })
+                continue
+            else:
+                name = f"{first_name} {last_name}".strip()
+                results.append({"status": "not_found", "name": name, "url": linkedin_url})
+                not_found += 1
+                continue
 
         # Skip if already has positive_reply_at set
         if prospect.positive_reply_at:
@@ -599,14 +627,15 @@ async def backfill_positive_replies(
     await session.commit()
 
     logger.info(
-        f"Backfill complete: {updated} updated, {not_found} not found, "
-        f"{already_set} already set"
+        f"Backfill complete: {updated} updated, {created} created, "
+        f"{not_found} not found, {already_set} already set"
     )
 
     return {
         "status": "ok",
         "summary": {
             "updated": updated,
+            "created": created,
             "not_found": not_found,
             "already_set": already_set,
             "total_rows": len(rows),
