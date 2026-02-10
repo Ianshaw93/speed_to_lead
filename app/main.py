@@ -405,54 +405,64 @@ async def process_outgoing_message(payload: HeyReachWebhookPayload) -> dict:
                 await session.flush()
                 logger.info(f"Created conversation {conversation.id} (outgoing)")
 
-            # 2. Dedup check: existing OUTBOUND message with same content + sent_at within 5 min
-            message_content = payload.latest_message
-            if not message_content:
-                logger.warning("Empty outgoing message, skipping")
-                await session.commit()
-                return {"status": "skipped", "reason": "empty_message"}
-
+            # 2. Log ALL messages from recent_messages (deduped)
+            # This captures the full conversation as a safety net
+            campaign_id = payload.campaign.id if payload.campaign else None
+            campaign_name = payload.campaign.name if payload.campaign else None
             now = datetime.now(timezone.utc)
             dedup_window = timedelta(minutes=5)
 
-            existing_result = await session.execute(
-                select(MessageLog).where(
-                    and_(
-                        MessageLog.conversation_id == conversation.id,
-                        MessageLog.direction == MessageDirection.OUTBOUND,
-                        MessageLog.content == message_content,
-                        MessageLog.sent_at >= now - dedup_window,
+            created = 0
+            deduped = 0
+
+            for msg in payload.all_recent_messages:
+                if not msg.message:
+                    continue
+
+                # is_reply=True means lead sent it (INBOUND), False means we sent it (OUTBOUND)
+                direction = MessageDirection.INBOUND if msg.is_reply else MessageDirection.OUTBOUND
+
+                # Dedup: check for existing message with same content + direction + conversation
+                existing_result = await session.execute(
+                    select(MessageLog).where(
+                        and_(
+                            MessageLog.conversation_id == conversation.id,
+                            MessageLog.direction == direction,
+                            MessageLog.content == msg.message,
+                            MessageLog.sent_at >= now - dedup_window,
+                        )
                     )
                 )
-            )
-            existing_msg = existing_result.scalar_one_or_none()
+                existing_msg = existing_result.scalar_one_or_none()
 
-            campaign_id = payload.campaign.id if payload.campaign else None
-            campaign_name = payload.campaign.name if payload.campaign else None
+                if existing_msg:
+                    # Enrich outbound messages with campaign info if missing
+                    if direction == MessageDirection.OUTBOUND:
+                        if campaign_id and not existing_msg.campaign_id:
+                            existing_msg.campaign_id = campaign_id
+                        if campaign_name and not existing_msg.campaign_name:
+                            existing_msg.campaign_name = campaign_name
+                    deduped += 1
+                    continue
 
-            if existing_msg:
-                # Enrich with campaign info if missing
-                if campaign_id and not existing_msg.campaign_id:
-                    existing_msg.campaign_id = campaign_id
-                if campaign_name and not existing_msg.campaign_name:
-                    existing_msg.campaign_name = campaign_name
-                await session.commit()
-                logger.info(f"Dedup: outbound message already exists for conversation {conversation.id}")
-                return {"status": "deduplicated", "message_log_id": str(existing_msg.id)}
+                # Create new MessageLog
+                message_log = MessageLog(
+                    conversation_id=conversation.id,
+                    direction=direction,
+                    content=msg.message,
+                    campaign_id=campaign_id if direction == MessageDirection.OUTBOUND else None,
+                    campaign_name=campaign_name if direction == MessageDirection.OUTBOUND else None,
+                )
+                session.add(message_log)
+                created += 1
 
-            # 3. Create new outbound MessageLog
-            message_log = MessageLog(
-                conversation_id=conversation.id,
-                direction=MessageDirection.OUTBOUND,
-                content=message_content,
-                campaign_id=campaign_id,
-                campaign_name=campaign_name,
-            )
-            session.add(message_log)
             await session.commit()
 
-            logger.info(f"Logged outbound message {message_log.id} for conversation {conversation.id}")
-            return {"status": "logged", "message_log_id": str(message_log.id)}
+            logger.info(
+                f"Outgoing webhook for conversation {conversation.id}: "
+                f"created={created}, deduped={deduped}"
+            )
+            return {"status": "logged", "created": created, "deduped": deduped}
 
     except Exception as e:
         print(f"!!! ERROR processing outgoing message: {e}", flush=True)
