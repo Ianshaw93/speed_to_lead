@@ -1,7 +1,7 @@
 """Add funnel stage tracking columns to prospects table.
 
-Revision ID: 011
-Revises: 010
+Revision ID: 012
+Revises: 011
 Create Date: 2026-02-10
 
 Adds columns for tracking funnel progression:
@@ -14,8 +14,8 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision: str = '011'
-down_revision: Union[str, None] = '010'
+revision: str = '012'
+down_revision: Union[str, None] = '011'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

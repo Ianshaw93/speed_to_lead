@@ -783,11 +783,11 @@ async def backfill_positive_replies(
     }
 
 
-@router.post("/run-migration-011")
-async def run_migration_011(
+@router.post("/run-migration-012")
+async def run_migration_012(
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    """Manually run migration 011 to add pitched_at and booked_at columns."""
+    """Manually run migration 012 to add pitched_at and booked_at columns."""
     from sqlalchemy import text
 
     # Check if columns already exist
