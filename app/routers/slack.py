@@ -967,20 +967,27 @@ async def _process_classification(
             draft.classification = classification
             draft.classified_at = datetime.now(timezone.utc)
 
+            # Get conversation and prospect for classification updates
+            conversation = draft.conversation
+            normalized_url = conversation.linkedin_profile_url.lower().strip().rstrip("/")
+            if "?" in normalized_url:
+                normalized_url = normalized_url.split("?")[0]
+
+            prospect_result = await session.execute(
+                select(Prospect).where(Prospect.linkedin_url == normalized_url)
+            )
+            prospect = prospect_result.scalar_one_or_none()
+
+            # If Positive, update prospect's positive_reply_at
+            if classification == ReplyClassification.POSITIVE:
+                if prospect:
+                    prospect.positive_reply_at = datetime.now(timezone.utc)
+                    logger.info(f"Set positive_reply_at for prospect {prospect.id}")
+                else:
+                    logger.warning(f"No prospect found for {normalized_url} to mark as positive")
+
             # If Not ICP, create ICPFeedback record
-            if classification == ReplyClassification.NOT_ICP:
-                conversation = draft.conversation
-
-                # Get prospect info
-                normalized_url = conversation.linkedin_profile_url.lower().strip().rstrip("/")
-                if "?" in normalized_url:
-                    normalized_url = normalized_url.split("?")[0]
-
-                prospect_result = await session.execute(
-                    select(Prospect).where(Prospect.linkedin_url == normalized_url)
-                )
-                prospect = prospect_result.scalar_one_or_none()
-
+            elif classification == ReplyClassification.NOT_ICP:
                 feedback = ICPFeedback(
                     lead_name=conversation.lead_name,
                     linkedin_url=normalized_url,

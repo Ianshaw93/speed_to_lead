@@ -342,8 +342,8 @@ def build_daily_report_blocks(
                     "type": "mrkdwn",
                     "text": (
                         "*Funnel*\n"
-                        f"Positive Reply: {funnel.get('positive_reply', 0)}\n"
                         f"Pitched: {funnel.get('pitched', 0)}\n"
+                        f"Calendar Sent: {funnel.get('calendar_sent', 0)}\n"
                         f"Booked: {funnel.get('booked', 0)}"
                     )
                 },
