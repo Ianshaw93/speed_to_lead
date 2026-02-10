@@ -832,6 +832,53 @@ async def run_migration_012(
     return {"status": "ok", "message": "Columns added successfully"}
 
 
+@router.post("/run-migration-013")
+async def run_migration_013(
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Manually run migration 013 to add connection tracking columns."""
+    from sqlalchemy import text
+
+    result = await session.execute(text(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = 'prospects' AND column_name = 'connection_sent_at'"
+    ))
+    if result.fetchone():
+        return {"status": "ok", "message": "Columns already exist"}
+
+    await session.execute(text(
+        "ALTER TABLE prospects ADD COLUMN connection_sent_at TIMESTAMP WITH TIME ZONE"
+    ))
+    await session.execute(text(
+        "ALTER TABLE prospects ADD COLUMN connection_accepted_at TIMESTAMP WITH TIME ZONE"
+    ))
+    await session.commit()
+
+    return {"status": "ok", "message": "Columns added successfully"}
+
+
+@router.post("/run-migration-014")
+async def run_migration_014(
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Manually run migration 014 to add calendar_sent_at column."""
+    from sqlalchemy import text
+
+    result = await session.execute(text(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = 'prospects' AND column_name = 'calendar_sent_at'"
+    ))
+    if result.fetchone():
+        return {"status": "ok", "message": "Column already exists"}
+
+    await session.execute(text(
+        "ALTER TABLE prospects ADD COLUMN calendar_sent_at TIMESTAMP WITH TIME ZONE"
+    ))
+    await session.commit()
+
+    return {"status": "ok", "message": "Column added successfully"}
+
+
 class FunnelStagePayload(BaseModel):
     """Payload for updating funnel stages."""
 
