@@ -350,6 +350,171 @@ async def heyreach_webhook(
         }
 
 
+async def process_outgoing_message(payload: HeyReachWebhookPayload) -> dict:
+    """Process an outgoing message from HeyReach webhook.
+
+    This function:
+    1. Upserts conversation record
+    2. Deduplicates against existing outbound messages (same content + sent_at within 5 min)
+    3. Creates MessageLog with OUTBOUND direction and campaign info
+    4. No AI draft, no Slack notification
+
+    Args:
+        payload: The webhook payload from HeyReach.
+
+    Returns:
+        Dict with message_log_id if successful.
+    """
+    print("=== PROCESSING OUTGOING MESSAGE IN BACKGROUND ===", flush=True)
+    try:
+        async with async_session_factory() as session:
+            from datetime import datetime, timedelta, timezone
+            from sqlalchemy import and_
+
+            # 1. Upsert conversation record
+            result = await session.execute(
+                select(Conversation).where(
+                    Conversation.heyreach_lead_id == payload.conversation_id
+                )
+            )
+            conversation = result.scalar_one_or_none()
+
+            # Build conversation history from recent messages
+            history = [
+                {"role": "lead", "content": msg.message, "time": msg.creation_time}
+                for msg in payload.all_recent_messages
+            ]
+
+            profile_url = payload.linkedin_profile_url or f"linkedin://conversation/{payload.conversation_id}"
+
+            if conversation:
+                conversation.conversation_history = history
+                conversation.linkedin_account_id = payload.linkedin_account_id
+                if payload.linkedin_profile_url and "linkedin://conversation/" in (conversation.linkedin_profile_url or ""):
+                    conversation.linkedin_profile_url = payload.linkedin_profile_url
+                logger.info(f"Updated conversation {conversation.id} (outgoing)")
+            else:
+                conversation = Conversation(
+                    heyreach_lead_id=payload.conversation_id,
+                    linkedin_profile_url=profile_url,
+                    lead_name=payload.lead_name,
+                    linkedin_account_id=payload.linkedin_account_id,
+                    conversation_history=history,
+                )
+                session.add(conversation)
+                await session.flush()
+                logger.info(f"Created conversation {conversation.id} (outgoing)")
+
+            # 2. Dedup check: existing OUTBOUND message with same content + sent_at within 5 min
+            message_content = payload.latest_message
+            if not message_content:
+                logger.warning("Empty outgoing message, skipping")
+                await session.commit()
+                return {"status": "skipped", "reason": "empty_message"}
+
+            now = datetime.now(timezone.utc)
+            dedup_window = timedelta(minutes=5)
+
+            existing_result = await session.execute(
+                select(MessageLog).where(
+                    and_(
+                        MessageLog.conversation_id == conversation.id,
+                        MessageLog.direction == MessageDirection.OUTBOUND,
+                        MessageLog.content == message_content,
+                        MessageLog.sent_at >= now - dedup_window,
+                    )
+                )
+            )
+            existing_msg = existing_result.scalar_one_or_none()
+
+            campaign_id = payload.campaign.id if payload.campaign else None
+            campaign_name = payload.campaign.name if payload.campaign else None
+
+            if existing_msg:
+                # Enrich with campaign info if missing
+                if campaign_id and not existing_msg.campaign_id:
+                    existing_msg.campaign_id = campaign_id
+                if campaign_name and not existing_msg.campaign_name:
+                    existing_msg.campaign_name = campaign_name
+                await session.commit()
+                logger.info(f"Dedup: outbound message already exists for conversation {conversation.id}")
+                return {"status": "deduplicated", "message_log_id": str(existing_msg.id)}
+
+            # 3. Create new outbound MessageLog
+            message_log = MessageLog(
+                conversation_id=conversation.id,
+                direction=MessageDirection.OUTBOUND,
+                content=message_content,
+                campaign_id=campaign_id,
+                campaign_name=campaign_name,
+            )
+            session.add(message_log)
+            await session.commit()
+
+            logger.info(f"Logged outbound message {message_log.id} for conversation {conversation.id}")
+            return {"status": "logged", "message_log_id": str(message_log.id)}
+
+    except Exception as e:
+        print(f"!!! ERROR processing outgoing message: {e}", flush=True)
+        logger.error(f"Error processing outgoing message: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+@app.get("/webhook/heyreach/outgoing")
+async def heyreach_outgoing_webhook_verify() -> dict:
+    """Handle GET requests for outgoing webhook verification."""
+    logger.info("GET request to /webhook/heyreach/outgoing - verification check")
+    return {"status": "ok", "message": "Outgoing webhook endpoint active"}
+
+
+@app.post("/webhook/heyreach/outgoing")
+async def heyreach_outgoing_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> dict:
+    """Receive webhook from HeyReach when an outgoing message is sent.
+
+    This endpoint captures campaign-sent messages (initial outreach, automated follow-ups)
+    to provide full conversation history and accurate metrics.
+
+    Args:
+        request: The incoming request.
+        background_tasks: FastAPI background tasks handler.
+
+    Returns:
+        Acknowledgment response.
+    """
+    print("=== OUTGOING WEBHOOK RECEIVED ===", flush=True)
+    body = await request.body()
+    print(f"Body length: {len(body)}", flush=True)
+    logger.info(f"Raw outgoing webhook body: {body.decode('utf-8', errors='replace')}")
+
+    try:
+        import json
+        data = json.loads(body)
+        logger.info(f"Parsed outgoing webhook data: {data}")
+    except Exception as e:
+        logger.error(f"Failed to parse outgoing webhook body: {e}")
+        return {"status": "error", "message": "Invalid JSON"}
+
+    try:
+        payload = HeyReachWebhookPayload(**data)
+        background_tasks.add_task(process_outgoing_message, payload)
+        return {
+            "status": "received",
+            "conversation_id": payload.conversation_id,
+            "lead_name": payload.lead_name,
+            "direction": "outgoing",
+        }
+    except Exception as e:
+        logger.error(f"Outgoing webhook schema validation failed: {e}")
+        return {
+            "status": "received_raw",
+            "message": "Payload logged for analysis",
+            "keys": list(data.keys()) if isinstance(data, dict) else "not a dict",
+        }
+
+
 # =============================================================================
 # PROSPECTS API - For tracking all outreach prospects
 # =============================================================================

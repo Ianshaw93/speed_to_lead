@@ -310,3 +310,92 @@ class TestHeyReachWebhook:
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "received_raw"
+
+
+class TestHeyReachOutgoingWebhook:
+    """Tests for the HeyReach outgoing message webhook endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_outgoing_webhook_receives_message(self, test_client: AsyncClient):
+        """Should receive and process an outgoing webhook payload."""
+        payload = {
+            "lead": {
+                "full_name": "Jane Smith",
+                "company_name": "Acme Inc",
+                "profile_url": "https://www.linkedin.com/in/janesmith",
+            },
+            "recent_messages": [
+                {
+                    "creation_time": "2026-02-10T10:00:00Z",
+                    "message": "Hi Jane, I wanted to reach out about...",
+                }
+            ],
+            "conversation_id": "conv_outgoing_123",
+            "sender": {"id": 789},
+        }
+
+        with patch("app.main.process_outgoing_message", new_callable=AsyncMock) as mock_process:
+            mock_process.return_value = {"status": "logged", "message_log_id": str(uuid.uuid4())}
+
+            response = await test_client.post("/webhook/heyreach/outgoing", json=payload)
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "received"
+            assert data["conversation_id"] == "conv_outgoing_123"
+            assert data["lead_name"] == "Jane Smith"
+            assert data["direction"] == "outgoing"
+
+    @pytest.mark.asyncio
+    async def test_outgoing_webhook_with_campaign_data(self, test_client: AsyncClient):
+        """Should parse campaign fields from outgoing webhook payload."""
+        payload = {
+            "lead": {
+                "full_name": "Bob Johnson",
+                "company_name": "StartupCo",
+                "profile_url": "https://www.linkedin.com/in/bobjohnson",
+            },
+            "recent_messages": [
+                {
+                    "creation_time": "2026-02-10T11:00:00Z",
+                    "message": "Hey Bob, saw your post about...",
+                }
+            ],
+            "conversation_id": "conv_campaign_456",
+            "sender": {"id": 101},
+            "campaign": {"id": 42, "name": "Q1 Outreach Campaign"},
+        }
+
+        with patch("app.main.process_outgoing_message", new_callable=AsyncMock) as mock_process:
+            mock_process.return_value = {"status": "logged", "message_log_id": str(uuid.uuid4())}
+
+            response = await test_client.post("/webhook/heyreach/outgoing", json=payload)
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "received"
+
+            # Verify process_outgoing_message was called with payload containing campaign
+            mock_process.assert_called_once()
+            called_payload = mock_process.call_args[0][0]
+            assert called_payload.campaign is not None
+            assert called_payload.campaign.id == 42
+            assert called_payload.campaign.name == "Q1 Outreach Campaign"
+
+    @pytest.mark.asyncio
+    async def test_outgoing_webhook_get_verification(self, test_client: AsyncClient):
+        """GET should return verification response."""
+        response = await test_client.get("/webhook/heyreach/outgoing")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+        assert "outgoing" in data["message"].lower() or "Outgoing" in data["message"]
+
+    @pytest.mark.asyncio
+    async def test_outgoing_webhook_empty_body(self, test_client: AsyncClient):
+        """Should handle empty body gracefully."""
+        response = await test_client.post("/webhook/heyreach/outgoing", json={})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "received_raw"

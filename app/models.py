@@ -187,6 +187,8 @@ class MessageLog(Base):
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
     )
+    campaign_id: Mapped[int | None] = mapped_column(nullable=True)
+    campaign_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # Relationships
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")
