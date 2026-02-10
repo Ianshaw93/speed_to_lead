@@ -526,6 +526,171 @@ async def heyreach_outgoing_webhook(
 
 
 # =============================================================================
+# CONNECTION TRACKING WEBHOOKS
+# =============================================================================
+
+
+async def process_connection_sent(data: dict) -> dict:
+    """Process a connection request sent event.
+
+    Sets connection_sent_at on the matching Prospect.
+    """
+    print("=== PROCESSING CONNECTION SENT IN BACKGROUND ===", flush=True)
+    try:
+        async with async_session_factory() as session:
+            from datetime import datetime, timezone
+
+            # Try to extract LinkedIn URL from payload
+            linkedin_url = _extract_linkedin_url(data)
+            if not linkedin_url:
+                logger.warning(f"Connection sent webhook: no LinkedIn URL found in payload")
+                return {"status": "no_url"}
+
+            normalized = normalize_linkedin_url(linkedin_url)
+            result = await session.execute(
+                select(Prospect).where(Prospect.linkedin_url == normalized)
+            )
+            prospect = result.scalar_one_or_none()
+
+            if not prospect:
+                logger.warning(f"Connection sent: prospect not found for {normalized}")
+                return {"status": "not_found", "url": normalized}
+
+            # Only set if not already set (dedup)
+            if not prospect.connection_sent_at:
+                prospect.connection_sent_at = datetime.now(timezone.utc)
+                await session.commit()
+                logger.info(f"Connection sent recorded for {prospect.full_name} ({normalized})")
+            else:
+                logger.info(f"Connection sent already recorded for {normalized}, skipping")
+
+            return {"status": "ok"}
+
+    except Exception as e:
+        logger.error(f"Error processing connection sent: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+async def process_connection_accepted(data: dict) -> dict:
+    """Process a connection accepted event.
+
+    Sets connection_accepted_at on the matching Prospect.
+    """
+    print("=== PROCESSING CONNECTION ACCEPTED IN BACKGROUND ===", flush=True)
+    try:
+        async with async_session_factory() as session:
+            from datetime import datetime, timezone
+
+            linkedin_url = _extract_linkedin_url(data)
+            if not linkedin_url:
+                logger.warning(f"Connection accepted webhook: no LinkedIn URL found in payload")
+                return {"status": "no_url"}
+
+            normalized = normalize_linkedin_url(linkedin_url)
+            result = await session.execute(
+                select(Prospect).where(Prospect.linkedin_url == normalized)
+            )
+            prospect = result.scalar_one_or_none()
+
+            if not prospect:
+                logger.warning(f"Connection accepted: prospect not found for {normalized}")
+                return {"status": "not_found", "url": normalized}
+
+            # Only set if not already set (dedup)
+            if not prospect.connection_accepted_at:
+                prospect.connection_accepted_at = datetime.now(timezone.utc)
+                await session.commit()
+                logger.info(f"Connection accepted recorded for {prospect.full_name} ({normalized})")
+            else:
+                logger.info(f"Connection accepted already recorded for {normalized}, skipping")
+
+            return {"status": "ok"}
+
+    except Exception as e:
+        logger.error(f"Error processing connection accepted: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+def _extract_linkedin_url(data: dict) -> str | None:
+    """Extract LinkedIn profile URL from webhook payload.
+
+    Tries multiple known payload shapes since we haven't confirmed
+    the exact HeyReach connection event format yet.
+    """
+    # Try HeyReachWebhookPayload shape: data.lead.profile_url
+    lead = data.get("lead", {})
+    if isinstance(lead, dict):
+        url = lead.get("profile_url") or lead.get("profileUrl")
+        if url:
+            return url
+
+    # Try flat shape
+    url = data.get("linkedin_profile_url") or data.get("profileUrl") or data.get("profile_url")
+    if url:
+        return url
+
+    return None
+
+
+@app.get("/webhook/heyreach/connection-sent")
+async def heyreach_connection_sent_verify() -> dict:
+    """Handle GET requests for connection-sent webhook verification."""
+    logger.info("GET request to /webhook/heyreach/connection-sent - verification check")
+    return {"status": "ok", "message": "Connection sent webhook endpoint active"}
+
+
+@app.post("/webhook/heyreach/connection-sent")
+async def heyreach_connection_sent_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> dict:
+    """Receive webhook from HeyReach when a connection request is sent."""
+    print("=== CONNECTION SENT WEBHOOK RECEIVED ===", flush=True)
+    body = await request.body()
+    logger.info(f"Raw connection-sent webhook body: {body.decode('utf-8', errors='replace')}")
+
+    try:
+        import json
+        data = json.loads(body)
+        logger.info(f"Parsed connection-sent data keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}")
+    except Exception as e:
+        logger.error(f"Failed to parse connection-sent webhook body: {e}")
+        return {"status": "error", "message": "Invalid JSON"}
+
+    background_tasks.add_task(process_connection_sent, data)
+    return {"status": "received", "event": "connection_sent"}
+
+
+@app.get("/webhook/heyreach/connection-accepted")
+async def heyreach_connection_accepted_verify() -> dict:
+    """Handle GET requests for connection-accepted webhook verification."""
+    logger.info("GET request to /webhook/heyreach/connection-accepted - verification check")
+    return {"status": "ok", "message": "Connection accepted webhook endpoint active"}
+
+
+@app.post("/webhook/heyreach/connection-accepted")
+async def heyreach_connection_accepted_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> dict:
+    """Receive webhook from HeyReach when a connection request is accepted."""
+    print("=== CONNECTION ACCEPTED WEBHOOK RECEIVED ===", flush=True)
+    body = await request.body()
+    logger.info(f"Raw connection-accepted webhook body: {body.decode('utf-8', errors='replace')}")
+
+    try:
+        import json
+        data = json.loads(body)
+        logger.info(f"Parsed connection-accepted data keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}")
+    except Exception as e:
+        logger.error(f"Failed to parse connection-accepted webhook body: {e}")
+        return {"status": "error", "message": "Invalid JSON"}
+
+    background_tasks.add_task(process_connection_accepted, data)
+    return {"status": "received", "event": "connection_accepted"}
+
+
+# =============================================================================
 # PROSPECTS API - For tracking all outreach prospects
 # =============================================================================
 
