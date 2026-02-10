@@ -462,7 +462,21 @@ async def get_funnel_summary(
 
     Returns counts at each stage of the sales funnel.
     """
-    from app.models import FunnelStage
+    # Connection requests sent
+    conn_sent_result = await session.execute(
+        select(func.count(Prospect.id)).where(
+            Prospect.connection_sent_at.isnot(None)
+        )
+    )
+    connection_requests_sent = conn_sent_result.scalar() or 0
+
+    # Connections accepted
+    conn_accepted_result = await session.execute(
+        select(func.count(Prospect.id)).where(
+            Prospect.connection_accepted_at.isnot(None)
+        )
+    )
+    connections_accepted = conn_accepted_result.scalar() or 0
 
     # Initial messages sent (prospects uploaded to HeyReach)
     initial_sent_result = await session.execute(
@@ -497,6 +511,14 @@ async def get_funnel_summary(
     )
     pitched = pitched_result.scalar() or 0
 
+    # Calendar sent (from Prospect.calendar_sent_at)
+    calendar_sent_result = await session.execute(
+        select(func.count(Prospect.id)).where(
+            Prospect.calendar_sent_at.isnot(None)
+        )
+    )
+    calendar_sent = calendar_sent_result.scalar() or 0
+
     # Booked (from Prospect.booked_at)
     booked_result = await session.execute(
         select(func.count(Prospect.id)).where(
@@ -505,14 +527,13 @@ async def get_funnel_summary(
     )
     booked = booked_result.scalar() or 0
 
-    # Calendar sent (pitched but not booked yet - for now same as pitched)
-    calendar_sent = pitched  # Will refine later if needed
-
     # Calculate conversion rates
     total_positive = positive_replies + positive_from_notes
 
     return {
         "funnel": {
+            "connection_requests_sent": connection_requests_sent,
+            "connections_accepted": connections_accepted,
             "initial_msgs_sent": initial_sent,
             "positive_replies": total_positive,
             "pitched": pitched,
@@ -520,6 +541,7 @@ async def get_funnel_summary(
             "booked": booked,
         },
         "conversion_rates": {
+            "accept_rate": f"{(connections_accepted / connection_requests_sent * 100):.1f}%" if connection_requests_sent > 0 else "N/A",
             "reply_rate": f"{(total_positive / initial_sent * 100):.1f}%" if initial_sent > 0 else "N/A",
             "pitch_rate": f"{(pitched / total_positive * 100):.1f}%" if total_positive > 0 else "N/A",
             "calendar_rate": f"{(calendar_sent / pitched * 100):.1f}%" if pitched > 0 else "N/A",
@@ -814,6 +836,7 @@ class FunnelStagePayload(BaseModel):
     """Payload for updating funnel stages."""
 
     pitched: list[str] = []  # LinkedIn URLs of pitched prospects
+    calendar_sent: list[str] = []  # LinkedIn URLs of prospects sent calendar
     booked: list[str] = []  # LinkedIn URLs of booked prospects
 
 
@@ -833,7 +856,7 @@ async def backfill_funnel_stages(
     """
     from datetime import datetime, timezone
 
-    results = {"pitched": [], "booked": [], "not_found": []}
+    results = {"pitched": [], "calendar_sent": [], "booked": [], "not_found": []}
 
     # Process pitched prospects
     for url in payload.pitched:
@@ -850,6 +873,23 @@ async def backfill_funnel_stages(
         else:
             results["not_found"].append(url)
 
+    # Process calendar_sent prospects
+    for url in payload.calendar_sent:
+        normalized = normalize_linkedin_url(url)
+        result = await session.execute(
+            select(Prospect).where(Prospect.linkedin_url == normalized)
+        )
+        prospect = result.scalar_one_or_none()
+
+        if prospect:
+            if not prospect.pitched_at:
+                prospect.pitched_at = datetime.now(timezone.utc)
+            if not prospect.calendar_sent_at:
+                prospect.calendar_sent_at = datetime.now(timezone.utc)
+            results["calendar_sent"].append(prospect.full_name or normalized)
+        else:
+            results["not_found"].append(url)
+
     # Process booked prospects
     for url in payload.booked:
         normalized = normalize_linkedin_url(url)
@@ -861,6 +901,8 @@ async def backfill_funnel_stages(
         if prospect:
             if not prospect.pitched_at:
                 prospect.pitched_at = datetime.now(timezone.utc)
+            if not prospect.calendar_sent_at:
+                prospect.calendar_sent_at = datetime.now(timezone.utc)
             if not prospect.booked_at:
                 prospect.booked_at = datetime.now(timezone.utc)
             results["booked"].append(prospect.full_name or normalized)
@@ -871,6 +913,7 @@ async def backfill_funnel_stages(
 
     logger.info(
         f"Funnel backfill: {len(results['pitched'])} pitched, "
+        f"{len(results['calendar_sent'])} calendar_sent, "
         f"{len(results['booked'])} booked, {len(results['not_found'])} not found"
     )
 
@@ -878,6 +921,7 @@ async def backfill_funnel_stages(
         "status": "ok",
         "summary": {
             "pitched": len(results["pitched"]),
+            "calendar_sent": len(results["calendar_sent"]),
             "booked": len(results["booked"]),
             "not_found": len(results["not_found"]),
         },
