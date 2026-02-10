@@ -750,3 +750,68 @@ async def lookup_prospect(
             "matches": matches,
             "count": len(matches),
         }
+
+
+@app.get("/api/prospects/missing-linkedin")
+async def get_prospects_missing_linkedin() -> dict:
+    """Get prospects with missing or empty LinkedIn URLs."""
+    from sqlalchemy import or_
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(Prospect).where(
+                or_(
+                    Prospect.linkedin_url.is_(None),
+                    Prospect.linkedin_url == "",
+                )
+            )
+        )
+        prospects = result.scalars().all()
+
+        return {
+            "count": len(prospects),
+            "prospects": [
+                {
+                    "id": p.id,
+                    "full_name": p.full_name,
+                    "first_name": p.first_name,
+                    "last_name": p.last_name,
+                    "email": p.email,
+                    "company_name": p.company_name,
+                    "job_title": p.job_title,
+                    "source_type": p.source_type.value if p.source_type else None,
+                }
+                for p in prospects
+            ],
+        }
+
+
+@app.patch("/api/prospects/{prospect_id}")
+async def update_prospect(prospect_id: int, request: Request) -> dict:
+    """Update a prospect's fields."""
+    data = await request.json()
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(Prospect).where(Prospect.id == prospect_id)
+        )
+        prospect = result.scalar_one_or_none()
+
+        if not prospect:
+            raise HTTPException(status_code=404, detail="Prospect not found")
+
+        # Update allowed fields
+        if "linkedin_url" in data:
+            prospect.linkedin_url = normalize_linkedin_url(data["linkedin_url"])
+        if "email" in data:
+            prospect.email = data["email"]
+        if "full_name" in data:
+            prospect.full_name = data["full_name"]
+        if "first_name" in data:
+            prospect.first_name = data["first_name"]
+        if "last_name" in data:
+            prospect.last_name = data["last_name"]
+
+        await session.commit()
+
+        return {"status": "ok", "id": prospect_id}
