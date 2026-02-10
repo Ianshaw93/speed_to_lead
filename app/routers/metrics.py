@@ -405,17 +405,11 @@ async def find_pitched_conversations(
 ) -> dict[str, Any]:
     """Find conversations where we've pitched (sent booking invite).
 
-    Searches outbound messages for phrases like "I'd be open to" or "sometime".
+    Searches OUTBOUND messages in MessageLog for pitch phrases.
+    MessageLog reliably tracks direction (outbound = our messages).
     """
     import re
 
-    # Get all conversations with their history
-    result = await session.execute(
-        select(Conversation).where(Conversation.conversation_history.isnot(None))
-    )
-    conversations = result.scalars().all()
-
-    pitched = []
     pitch_patterns = [
         r"i'?d be open to",
         r"sometime",
@@ -427,22 +421,10 @@ async def find_pitched_conversations(
     ]
     combined_pattern = re.compile("|".join(pitch_patterns), re.IGNORECASE)
 
-    for convo in conversations:
-        if not convo.conversation_history:
-            continue
+    pitched = []
+    seen_convos = set()
 
-        for msg in convo.conversation_history:
-            # Search ALL messages - conversation_history doesn't reliably mark direction
-            content = msg.get("content") or msg.get("text") or msg.get("message") or ""
-            if combined_pattern.search(content):
-                pitched.append({
-                    "name": convo.lead_name,
-                    "linkedin_url": convo.linkedin_profile_url,
-                    "pitch_snippet": content[:200] + "..." if len(content) > 200 else content,
-                })
-                break  # Only count once per conversation
-
-    # Also check MessageLog for outbound messages
+    # Search MessageLog for OUTBOUND messages only (reliable direction tracking)
     msg_result = await session.execute(
         select(MessageLog, Conversation)
         .join(Conversation, MessageLog.conversation_id == Conversation.id)
@@ -450,7 +432,6 @@ async def find_pitched_conversations(
     )
     message_rows = msg_result.all()
 
-    seen_convos = {p["linkedin_url"] for p in pitched}
     for msg_log, convo in message_rows:
         if convo.linkedin_profile_url in seen_convos:
             continue
