@@ -15,6 +15,7 @@ ssl_context.verify_mode = ssl.CERT_NONE
 engine = create_async_engine(
     settings.async_database_url,
     echo=settings.environment == "development",
+    pool_pre_ping=True,
     connect_args={"ssl": ssl_context} if "postgresql" in settings.async_database_url else {},
 )
 
