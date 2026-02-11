@@ -1,9 +1,11 @@
 """FastAPI application entry point."""
 
 import logging
+import os
 import sys
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 # Configure logging early
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
@@ -1155,3 +1157,57 @@ async def update_prospect(prospect_id: int, request: Request) -> dict:
         await session.commit()
 
         return {"status": "ok", "id": prospect_id}
+
+
+# =============================================================================
+# BUYING SIGNAL WEBHOOK
+# =============================================================================
+
+BUYING_SIGNAL_LOG = os.path.join(".tmp", "buying_signal_payloads.jsonl")
+
+
+@app.post("/buying-signal")
+async def receive_buying_signal(request: Request) -> dict:
+    """Receives prospect payloads from buying signal agent.
+
+    Logs raw payload to .tmp/buying_signal_payloads.jsonl for inspection.
+    """
+    import json as _json
+    data = await request.json()
+
+    entry = {
+        "received_at": datetime.now(timezone.utc).isoformat(),
+        "payload": data,
+    }
+
+    os.makedirs(".tmp", exist_ok=True)
+    with open(BUYING_SIGNAL_LOG, "a") as f:
+        f.write(_json.dumps(entry) + "\n")
+
+    logger.info(f"Buying signal received: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}")
+
+    return {
+        "status": "received",
+        "received_at": entry["received_at"],
+        "fields_received": list(data.keys()) if isinstance(data, dict) else [],
+    }
+
+
+@app.get("/buying-signal/log")
+async def view_buying_signal_log(limit: int = 20) -> dict:
+    """View recent buying signal payloads for format inspection."""
+    import json as _json
+
+    if not os.path.exists(BUYING_SIGNAL_LOG):
+        return {"entries": [], "total": 0}
+
+    entries = []
+    with open(BUYING_SIGNAL_LOG, "r") as f:
+        for line in f:
+            if line.strip():
+                entries.append(_json.loads(line))
+
+    return {
+        "entries": entries[-limit:],
+        "total": len(entries),
+    }
