@@ -26,7 +26,11 @@ class Settings(BaseSettings):
     slack_bot_token: str = ""
     slack_channel_id: str = ""
     slack_metrics_channel_id: str = ""  # For daily/weekly reports (falls back to slack_channel_id)
+    slack_engagement_channel_id: str = ""  # For LinkedIn engagement notifications
     slack_signing_secret: str = ""
+
+    # Apify
+    apify_api_key: str = ""
 
     # Database
     database_url: str = "sqlite+aiosqlite:///./speed_to_lead.db"

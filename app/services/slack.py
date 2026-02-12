@@ -8,7 +8,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 from slack_sdk.errors import SlackApiError
 
 from app.config import settings
-from app.models import FunnelStage
+from app.models import FunnelStage, WatchedProfileCategory
 from app.services.reports import format_minutes
 
 
@@ -509,6 +509,127 @@ def build_weekly_report_blocks(
     return blocks
 
 
+# Category display labels
+CATEGORY_DISPLAY = {
+    WatchedProfileCategory.PROSPECT: "Prospect",
+    WatchedProfileCategory.INFLUENCER: "Influencer",
+    WatchedProfileCategory.ICP_PEER: "ICP Peer",
+    WatchedProfileCategory.COMPETITOR: "Competitor",
+}
+
+
+def build_engagement_message(
+    author_name: str,
+    author_headline: str | None,
+    author_category: WatchedProfileCategory,
+    post_url: str,
+    post_summary: str,
+    draft_comment: str,
+) -> list[dict[str, Any]]:
+    """Build Slack Block Kit message for engagement notification.
+
+    Args:
+        author_name: Name of the post author.
+        author_headline: Author's LinkedIn headline.
+        author_category: Category of the watched profile.
+        post_url: URL to the LinkedIn post.
+        post_summary: AI-generated summary of the post.
+        draft_comment: AI-generated draft comment.
+
+    Returns:
+        List of Slack Block Kit blocks.
+    """
+    category_label = CATEGORY_DISPLAY.get(author_category, author_category.value)
+
+    # Author info line
+    author_info = f"*{author_name}*"
+    if author_headline:
+        author_info += f"\n_{author_headline}_"
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": "LinkedIn Engagement Opportunity",
+                "emoji": True,
+            },
+        },
+        {
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn", "text": f"*Category:* {category_label}"}
+            ],
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": author_info},
+            "accessory": {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "Open Post", "emoji": True},
+                "url": post_url,
+                "action_id": "engagement_open_post",
+            },
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Summary:*\n{post_summary}",
+            },
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Draft Comment:*\n```{draft_comment}```",
+            },
+        },
+        {"type": "divider"},
+    ]
+
+    return blocks
+
+
+def build_engagement_buttons(post_id: uuid.UUID) -> list[dict[str, Any]]:
+    """Build action buttons for engagement post.
+
+    Args:
+        post_id: The engagement post ID for action values.
+
+    Returns:
+        List of Slack Block Kit action blocks.
+    """
+    return [
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Done", "emoji": True},
+                    "style": "primary",
+                    "action_id": "engagement_done",
+                    "value": str(post_id),
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Edit", "emoji": True},
+                    "action_id": "engagement_edit",
+                    "value": str(post_id),
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Skip", "emoji": True},
+                    "style": "danger",
+                    "action_id": "engagement_skip",
+                    "value": str(post_id),
+                },
+            ],
+        }
+    ]
+
+
 class SlackBot:
     """Client for sending Slack notifications."""
 
@@ -517,6 +638,7 @@ class SlackBot:
         bot_token: str | None = None,
         channel_id: str | None = None,
         metrics_channel_id: str | None = None,
+        engagement_channel_id: str | None = None,
     ):
         """Initialize the Slack bot.
 
@@ -524,12 +646,18 @@ class SlackBot:
             bot_token: Slack bot token. Defaults to settings value.
             channel_id: Channel ID for draft notifications. Defaults to settings value.
             metrics_channel_id: Channel ID for metrics reports. Defaults to settings value.
+            engagement_channel_id: Channel ID for engagement notifications. Defaults to settings value.
         """
         self._bot_token = bot_token or settings.slack_bot_token
         self._channel_id = channel_id or settings.slack_channel_id
         self._metrics_channel_id = (
             metrics_channel_id
             or settings.slack_metrics_channel_id
+            or self._channel_id
+        )
+        self._engagement_channel_id = (
+            engagement_channel_id
+            or settings.slack_engagement_channel_id
             or self._channel_id
         )
         self._client = AsyncWebClient(token=self._bot_token)
@@ -979,6 +1107,146 @@ class SlackBot:
             raise SlackError(f"Failed to send weekly report: {e.response['error']}") from e
         except Exception as e:
             raise SlackError(f"Failed to send weekly report: {e}") from e
+
+    async def send_engagement_notification(
+        self,
+        post_id: uuid.UUID,
+        author_name: str,
+        author_headline: str | None,
+        author_category: "WatchedProfileCategory",
+        post_url: str,
+        post_summary: str,
+        draft_comment: str,
+    ) -> str:
+        """Send an engagement notification to the engagement Slack channel.
+
+        Args:
+            post_id: The engagement post ID for button actions.
+            author_name: Name of the post author.
+            author_headline: Author's LinkedIn headline.
+            author_category: Category of the watched profile.
+            post_url: URL to the LinkedIn post.
+            post_summary: AI-generated summary.
+            draft_comment: AI-generated draft comment.
+
+        Returns:
+            The Slack message timestamp (ts).
+
+        Raises:
+            SlackError: If sending fails.
+        """
+        try:
+            blocks = build_engagement_message(
+                author_name=author_name,
+                author_headline=author_headline,
+                author_category=author_category,
+                post_url=post_url,
+                post_summary=post_summary,
+                draft_comment=draft_comment,
+            )
+            blocks.extend(build_engagement_buttons(post_id))
+
+            response = await self._client.chat_postMessage(
+                channel=self._engagement_channel_id,
+                blocks=blocks,
+                text=f"Engagement opportunity: {author_name} posted on LinkedIn",
+            )
+
+            return response["ts"]
+
+        except SlackApiError as e:
+            raise SlackError(
+                f"Failed to send engagement notification: {e.response['error']}"
+            ) from e
+        except Exception as e:
+            raise SlackError(
+                f"Failed to send engagement notification: {e}"
+            ) from e
+
+    async def update_engagement_message(
+        self,
+        message_ts: str,
+        text: str,
+        blocks: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Update an engagement message (e.g., after Done/Skip).
+
+        Args:
+            message_ts: The message timestamp to update.
+            text: New message text.
+            blocks: Optional new blocks.
+
+        Raises:
+            SlackError: If update fails.
+        """
+        try:
+            await self._client.chat_update(
+                channel=self._engagement_channel_id,
+                ts=message_ts,
+                text=text,
+                blocks=blocks,
+            )
+        except SlackApiError as e:
+            raise SlackError(
+                f"Failed to update engagement message: {e.response['error']}"
+            ) from e
+        except Exception as e:
+            raise SlackError(
+                f"Failed to update engagement message: {e}"
+            ) from e
+
+    async def open_engagement_edit_modal(
+        self,
+        trigger_id: str,
+        post_id: uuid.UUID,
+        current_comment: str,
+    ) -> None:
+        """Open a modal for editing the engagement comment.
+
+        Args:
+            trigger_id: Slack trigger ID from the interaction.
+            post_id: The engagement post being edited.
+            current_comment: Current draft comment to pre-fill.
+
+        Raises:
+            SlackError: If opening modal fails.
+        """
+        try:
+            await self._client.views_open(
+                trigger_id=trigger_id,
+                view={
+                    "type": "modal",
+                    "callback_id": "engagement_edit_submit",
+                    "title": {"type": "plain_text", "text": "Edit Comment"},
+                    "submit": {"type": "plain_text", "text": "Save"},
+                    "close": {"type": "plain_text", "text": "Cancel"},
+                    "blocks": [
+                        {
+                            "type": "input",
+                            "block_id": "comment_input",
+                            "element": {
+                                "type": "plain_text_input",
+                                "action_id": "comment_text",
+                                "multiline": True,
+                                "initial_value": current_comment,
+                            },
+                            "label": {
+                                "type": "plain_text",
+                                "text": "Your Comment",
+                            },
+                        }
+                    ],
+                    "private_metadata": str(post_id),
+                },
+            )
+        except SlackApiError as e:
+            raise SlackError(
+                f"Failed to open engagement edit modal: {e.response['error']}"
+            ) from e
+        except Exception as e:
+            raise SlackError(
+                f"Failed to open engagement edit modal: {e}"
+            ) from e
 
 
 # Global bot instance

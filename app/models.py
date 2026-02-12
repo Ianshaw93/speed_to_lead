@@ -6,7 +6,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import JSON, Date, DateTime, Enum, ForeignKey, Numeric, String, Text
+from sqlalchemy import Boolean, JSON, Date, DateTime, Enum, ForeignKey, Numeric, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -62,6 +62,24 @@ class ProspectSource(str, enum.Enum):
     VAYNE = "vayne"  # From Vayne leads
     MANUAL = "manual"  # Manually added
     OTHER = "other"
+
+
+class WatchedProfileCategory(str, enum.Enum):
+    """Category of a watched LinkedIn profile."""
+
+    PROSPECT = "prospect"
+    INFLUENCER = "influencer"
+    ICP_PEER = "icp_peer"
+    COMPETITOR = "competitor"
+
+
+class EngagementPostStatus(str, enum.Enum):
+    """Status of an engagement post draft."""
+
+    PENDING = "pending"
+    DONE = "done"
+    EDITED = "edited"
+    SKIPPED = "skipped"
 
 
 class Conversation(Base):
@@ -388,4 +406,89 @@ class DailyMetrics(Base):
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class WatchedProfile(Base):
+    """A LinkedIn profile to monitor for engagement opportunities."""
+
+    __tablename__ = "watched_profiles"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    linkedin_url: Mapped[str] = mapped_column(String(500), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    headline: Mapped[str | None] = mapped_column(Text, nullable=True)
+    category: Mapped[WatchedProfileCategory] = mapped_column(
+        Enum(
+            WatchedProfileCategory,
+            name="watched_profile_category",
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        default=WatchedProfileCategory.PROSPECT,
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    # Relationships
+    engagement_posts: Mapped[list["EngagementPost"]] = relationship(
+        back_populates="watched_profile"
+    )
+
+
+class EngagementPost(Base):
+    """A LinkedIn post found from a watched profile, with draft comment."""
+
+    __tablename__ = "engagement_posts"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    watched_profile_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("watched_profiles.id"),
+        index=True,
+    )
+    post_url: Mapped[str] = mapped_column(String(500), unique=True, index=True)
+    post_snippet: Mapped[str | None] = mapped_column(Text, nullable=True)
+    post_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    draft_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[EngagementPostStatus] = mapped_column(
+        Enum(
+            EngagementPostStatus,
+            name="engagement_post_status",
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        default=EngagementPostStatus.PENDING,
+    )
+    slack_message_ts: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    # Relationships
+    watched_profile: Mapped["WatchedProfile"] = relationship(
+        back_populates="engagement_posts"
     )

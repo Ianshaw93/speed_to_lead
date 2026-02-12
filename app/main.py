@@ -36,6 +36,7 @@ try:
 
     from app.routers.slack import router as slack_router
     from app.routers.metrics import router as metrics_router
+    from app.routers.engagement import router as engagement_router
     logger.info("Routers imported")
 except Exception as e:
     logger.error(f"Import failed: {e}", exc_info=True)
@@ -74,6 +75,7 @@ app = FastAPI(
 # Include routers
 app.include_router(slack_router)
 app.include_router(metrics_router)
+app.include_router(engagement_router)
 
 
 @app.middleware("http")

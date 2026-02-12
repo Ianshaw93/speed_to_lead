@@ -7,6 +7,10 @@ from openai import AsyncOpenAI
 
 from app.config import settings
 from app.models import FunnelStage
+from app.prompts.comment_drafter import (
+    SYSTEM_PROMPT as COMMENT_DRAFTER_SYSTEM_PROMPT,
+    build_comment_drafter_prompt,
+)
 from app.prompts.stage_detector import (
     STAGE_DETECTION_SYSTEM_PROMPT,
     build_stage_detection_prompt,
@@ -178,6 +182,69 @@ class DeepSeekClient:
             raise DeepSeekError(f"No prompt available for stage {stage}: {e}") from e
         except Exception as e:
             raise DeepSeekError(f"DeepSeek API error: {e}") from e
+
+    async def summarize_and_draft_comment(
+        self,
+        author_name: str,
+        author_headline: str | None,
+        author_category: str,
+        post_snippet: str,
+    ) -> tuple[str, str]:
+        """Summarize a LinkedIn post and draft an engagement comment.
+
+        Args:
+            author_name: Name of the post author.
+            author_headline: Author's LinkedIn headline.
+            author_category: Category of the watched profile.
+            post_snippet: The post content from search results.
+
+        Returns:
+            Tuple of (summary, draft_comment).
+
+        Raises:
+            DeepSeekError: If the API call fails.
+        """
+        try:
+            user_prompt = build_comment_drafter_prompt(
+                author_name=author_name,
+                author_headline=author_headline,
+                author_category=author_category,
+                post_snippet=post_snippet,
+            )
+
+            messages = [
+                {"role": "system", "content": COMMENT_DRAFTER_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ]
+
+            completion = await self._client.chat.completions.create(
+                model=self._model,
+                messages=messages,
+                max_tokens=500,
+                temperature=0.7,
+            )
+
+            if not completion.choices:
+                raise DeepSeekError("DeepSeek returned empty response for comment drafting")
+
+            content = completion.choices[0].message.content
+
+            # Parse JSON response
+            try:
+                data = json.loads(content)
+                summary = data.get("summary", "")
+                comment = data.get("comment", "")
+            except json.JSONDecodeError:
+                # Fallback: use the raw content as both
+                summary = "Could not parse summary"
+                comment = content
+
+            return summary, comment
+
+        except DeepSeekError:
+            raise
+        except Exception as e:
+            raise DeepSeekError(f"DeepSeek comment drafting error: {e}") from e
 
     async def generate_draft(
         self,

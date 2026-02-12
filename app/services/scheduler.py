@@ -76,6 +76,20 @@ async def send_daily_report_task() -> None:
         logger.error(f"Failed to send daily report: {e}", exc_info=True)
 
 
+async def check_engagement_task() -> None:
+    """Check for new LinkedIn posts from watched profiles. Called by scheduler."""
+    import logging
+    from app.services.engagement import check_engagement_posts
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        result = await check_engagement_posts()
+        logger.info(f"Engagement check completed: {result}")
+    except Exception as e:
+        logger.error(f"Failed to run engagement check: {e}", exc_info=True)
+
+
 async def send_weekly_report_task() -> None:
     """Send weekly metrics report. Called by scheduler on Monday 9am UK time."""
     import logging
@@ -129,6 +143,20 @@ class SchedulerService:
             ),
             id='daily_report',
             name='Daily metrics report',
+            replace_existing=True,
+            misfire_grace_time=3600,  # 1 hour grace
+        )
+
+        # Engagement check at 8am, 12pm, 4pm, 8pm UK time
+        self._scheduler.add_job(
+            check_engagement_task,
+            trigger=CronTrigger(
+                hour='8,12,16,20',
+                minute=0,
+                timezone='Europe/London',
+            ),
+            id='engagement_check',
+            name='LinkedIn engagement check',
             replace_existing=True,
             misfire_grace_time=3600,  # 1 hour grace
         )

@@ -20,6 +20,8 @@ from app.models import (
     Conversation,
     Draft,
     DraftStatus,
+    EngagementPost,
+    EngagementPostStatus,
     ICPFeedback,
     MessageDirection,
     MessageLog,
@@ -1042,6 +1044,174 @@ async def handle_not_icp_modal_submit(
     )
 
 
+# =============================================================================
+# Engagement Action Handlers
+# =============================================================================
+
+
+async def handle_engagement_done(
+    post_id: uuid.UUID,
+    message_ts: str,
+    background_tasks: BackgroundTasks,
+) -> None:
+    """Handle engagement_done action - mark post as DONE."""
+    background_tasks.add_task(_process_engagement_done, post_id, message_ts)
+
+
+async def _process_engagement_done(post_id: uuid.UUID, message_ts: str) -> None:
+    """Background task to process engagement done."""
+    try:
+        async with async_session_factory() as session:
+            result = await session.execute(
+                select(EngagementPost).where(EngagementPost.id == post_id)
+            )
+            post = result.scalar_one_or_none()
+
+            if not post:
+                logger.error(f"EngagementPost {post_id} not found")
+                return
+
+            post.status = EngagementPostStatus.DONE
+            await session.commit()
+
+            slack_bot = get_slack_bot()
+            await slack_bot.update_engagement_message(
+                message_ts=message_ts,
+                text="Commented - done!",
+                blocks=[
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": "Commented - done!"},
+                    }
+                ],
+            )
+
+            logger.info(f"Engagement post {post_id} marked as DONE")
+
+    except Exception as e:
+        logger.error(f"Error marking engagement done {post_id}: {e}", exc_info=True)
+
+
+async def handle_engagement_edit(
+    post_id: uuid.UUID,
+    trigger_id: str,
+) -> None:
+    """Handle engagement_edit action - open modal with current draft."""
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(EngagementPost).where(EngagementPost.id == post_id)
+        )
+        post = result.scalar_one_or_none()
+
+        if not post:
+            logger.error(f"EngagementPost {post_id} not found for edit")
+            slack_bot = get_slack_bot()
+            await slack_bot.send_confirmation("Error: Engagement post not found.")
+            return
+
+        slack_bot = get_slack_bot()
+        await slack_bot.open_engagement_edit_modal(
+            trigger_id=trigger_id,
+            post_id=post_id,
+            current_comment=post.draft_comment or "",
+        )
+
+
+async def handle_engagement_skip(
+    post_id: uuid.UUID,
+    message_ts: str,
+    background_tasks: BackgroundTasks,
+) -> None:
+    """Handle engagement_skip action - mark post as SKIPPED."""
+    background_tasks.add_task(_process_engagement_skip, post_id, message_ts)
+
+
+async def _process_engagement_skip(post_id: uuid.UUID, message_ts: str) -> None:
+    """Background task to process engagement skip."""
+    try:
+        async with async_session_factory() as session:
+            result = await session.execute(
+                select(EngagementPost).where(EngagementPost.id == post_id)
+            )
+            post = result.scalar_one_or_none()
+
+            if not post:
+                logger.error(f"EngagementPost {post_id} not found for skip")
+                return
+
+            post.status = EngagementPostStatus.SKIPPED
+            await session.commit()
+
+            slack_bot = get_slack_bot()
+            await slack_bot.update_engagement_message(
+                message_ts=message_ts,
+                text="Skipped",
+                blocks=[
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": "Skipped"},
+                    }
+                ],
+            )
+
+            logger.info(f"Engagement post {post_id} marked as SKIPPED")
+
+    except Exception as e:
+        logger.error(f"Error skipping engagement {post_id}: {e}", exc_info=True)
+
+
+async def handle_engagement_edit_submit(
+    post_id: uuid.UUID,
+    edited_comment: str,
+    background_tasks: BackgroundTasks,
+) -> None:
+    """Handle engagement edit modal submission."""
+    background_tasks.add_task(_process_engagement_edit_submit, post_id, edited_comment)
+
+
+async def _process_engagement_edit_submit(
+    post_id: uuid.UUID,
+    edited_comment: str,
+) -> None:
+    """Background task to process engagement edit submission."""
+    try:
+        async with async_session_factory() as session:
+            result = await session.execute(
+                select(EngagementPost).where(EngagementPost.id == post_id)
+            )
+            post = result.scalar_one_or_none()
+
+            if not post:
+                logger.error(f"EngagementPost {post_id} not found for edit submit")
+                return
+
+            post.draft_comment = edited_comment
+            post.status = EngagementPostStatus.EDITED
+            await session.commit()
+
+            # Update Slack message to show it was edited
+            if post.slack_message_ts:
+                slack_bot = get_slack_bot()
+                await slack_bot.update_engagement_message(
+                    message_ts=post.slack_message_ts,
+                    text="Comment edited and saved",
+                    blocks=[
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"Comment edited:\n```{edited_comment}```",
+                            },
+                        }
+                    ],
+                )
+
+            logger.info(f"Engagement post {post_id} comment edited")
+
+    except Exception as e:
+        logger.error(f"Error editing engagement {post_id}: {e}", exc_info=True)
+
+
 @router.post("/interactions")
 async def slack_interactions(
     request: Request,
@@ -1079,6 +1249,26 @@ async def slack_interactions(
         message_ts = payload.get("message", {}).get("ts", "")
         trigger_id = payload.get("trigger_id", "")
         print(f"Action: {action_id}, value: {value_str[:50] if value_str else 'none'}", flush=True)
+
+        # Handle engagement actions
+        if action_id in ("engagement_done", "engagement_edit", "engagement_skip", "engagement_open_post"):
+            if action_id == "engagement_open_post":
+                # Link button - no server-side action needed
+                return {"ok": True}
+
+            try:
+                post_id = uuid.UUID(value_str)
+            except ValueError:
+                logger.error(f"Invalid engagement post_id: {value_str}")
+                return {"ok": True}
+
+            if action_id == "engagement_done":
+                await handle_engagement_done(post_id, message_ts, background_tasks)
+            elif action_id == "engagement_edit":
+                await handle_engagement_edit(post_id, trigger_id)
+            elif action_id == "engagement_skip":
+                await handle_engagement_skip(post_id, message_ts, background_tasks)
+            return {"ok": True}
 
         # Handle follow-up configuration actions (use conversation_id)
         if action_id in ("configure_followups", "skip_followups"):
@@ -1169,6 +1359,23 @@ async def slack_interactions(
 
             if edited_text:
                 await handle_modal_submit(draft_id, edited_text, background_tasks)
+
+        # Handle engagement edit modal submission
+        elif callback_id == "engagement_edit_submit":
+            try:
+                post_id = uuid.UUID(private_metadata)
+            except ValueError:
+                logger.error(f"Invalid post_id in metadata: {private_metadata}")
+                return {"ok": True}
+
+            edited_comment = (
+                values.get("comment_input", {})
+                .get("comment_text", {})
+                .get("value", "")
+            )
+
+            if edited_comment:
+                await handle_engagement_edit_submit(post_id, edited_comment, background_tasks)
 
         # Handle Not ICP modal submission
         elif callback_id == "not_icp_submit":
