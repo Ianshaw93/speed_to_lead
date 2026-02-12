@@ -17,6 +17,8 @@ from app.models import (
     WatchedProfileCategory,
 )
 
+from app.models import Prospect
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/engagement", tags=["engagement"])
@@ -111,6 +113,45 @@ async def run_migration_015(
 
 
 # --- Schemas ---
+
+
+@router.get("/pitched-prospects")
+async def get_pitched_prospects(
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Get all prospects who have reached pitched stage or beyond."""
+    from sqlalchemy import or_
+
+    result = await session.execute(
+        select(Prospect).where(
+            or_(
+                Prospect.pitched_at.isnot(None),
+                Prospect.calendar_sent_at.isnot(None),
+                Prospect.booked_at.isnot(None),
+                Prospect.positive_reply_at.isnot(None),
+            )
+        )
+    )
+    prospects = result.scalars().all()
+
+    return {
+        "count": len(prospects),
+        "prospects": [
+            {
+                "full_name": p.full_name,
+                "linkedin_url": p.linkedin_url,
+                "job_title": p.job_title,
+                "company_name": p.company_name,
+                "headline": p.headline,
+                "pitched_at": p.pitched_at.isoformat() if p.pitched_at else None,
+                "calendar_sent_at": p.calendar_sent_at.isoformat() if p.calendar_sent_at else None,
+                "booked_at": p.booked_at.isoformat() if p.booked_at else None,
+                "positive_reply_at": p.positive_reply_at.isoformat() if p.positive_reply_at else None,
+                "positive_reply_notes": p.positive_reply_notes,
+            }
+            for p in prospects
+        ],
+    }
 
 
 class WatchlistCreateRequest(BaseModel):
