@@ -53,12 +53,14 @@ This project is deployed on Railway. Deployment is triggered by pushing to GitHu
 Railway CLI requires `cmd.exe /c` wrapper in Git Bash:
 
 ```bash
+cmd.exe /c "railway status"                       # ALWAYS CHECK THIS FIRST - shows which service CLI is linked to
 cmd.exe /c "railway deployment list"              # List deployments
 cmd.exe /c "railway logs --build --lines 100 ID"  # Build logs
 cmd.exe /c "railway logs --lines 50 --since 1h"   # Runtime logs
-cmd.exe /c "railway status"                       # Check link status
 cmd.exe /c "railway redeploy --yes"               # Trigger redeploy
 ```
+
+**CRITICAL**: Before running ANY Railway CLI command that modifies state (redeploy, etc.), ALWAYS run `railway status` first to confirm you're linked to the correct service (app, not Postgres). The CLI may be linked to the Postgres service, and `railway redeploy` on Postgres restarts the database instead of the app.
 
 ### Railway MCP Server
 
