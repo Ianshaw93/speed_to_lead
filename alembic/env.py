@@ -64,6 +64,7 @@ def run_migrations_online() -> None:
     connectable = create_engine(
         url,
         poolclass=pool.NullPool,
+        connect_args={"connect_timeout": 5},
     )
 
     # Retry connection with backoff for Railway internal DNS resolution
