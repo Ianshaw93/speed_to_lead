@@ -20,8 +20,35 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _enum_exists(conn, enum_name: str) -> bool:
+    """Check if a PostgreSQL enum type exists."""
+    result = conn.execute(sa.text(
+        "SELECT 1 FROM pg_type WHERE typname = :name"
+    ), {"name": enum_name})
+    return result.fetchone() is not None
+
+
 def upgrade() -> None:
     conn = op.get_bind()
+
+    # Create enum types (check existence first to handle partial runs)
+    if not _enum_exists(conn, 'watched_profile_category'):
+        print("=== CREATING watched_profile_category enum ===", flush=True)
+        conn.execute(sa.text(
+            "CREATE TYPE watched_profile_category AS ENUM "
+            "('prospect', 'influencer', 'icp_peer', 'competitor')"
+        ))
+    else:
+        print("=== watched_profile_category enum already exists ===", flush=True)
+
+    if not _enum_exists(conn, 'engagement_post_status'):
+        print("=== CREATING engagement_post_status enum ===", flush=True)
+        conn.execute(sa.text(
+            "CREATE TYPE engagement_post_status AS ENUM "
+            "('pending', 'done', 'edited', 'skipped')"
+        ))
+    else:
+        print("=== engagement_post_status enum already exists ===", flush=True)
 
     # Check if watched_profiles already exists
     result = conn.execute(sa.text(
@@ -33,20 +60,16 @@ def upgrade() -> None:
     else:
         print("=== CREATING watched_profiles table ===", flush=True)
 
-        # Create enum types
-        watched_profile_category = sa.Enum(
-            'prospect', 'influencer', 'icp_peer', 'competitor',
-            name='watched_profile_category',
-        )
-        watched_profile_category.create(conn, checkfirst=True)
-
         op.create_table(
             'watched_profiles',
             sa.Column('id', sa.Uuid(), nullable=False, primary_key=True),
             sa.Column('linkedin_url', sa.String(500), nullable=False),
             sa.Column('name', sa.String(255), nullable=False),
             sa.Column('headline', sa.Text(), nullable=True),
-            sa.Column('category', watched_profile_category, nullable=False, server_default='prospect'),
+            sa.Column('category', sa.Enum(
+                'prospect', 'influencer', 'icp_peer', 'competitor',
+                name='watched_profile_category', create_type=False,
+            ), nullable=False, server_default='prospect'),
             sa.Column('is_active', sa.Boolean(), nullable=False, server_default='true'),
             sa.Column('last_checked_at', sa.DateTime(timezone=True), nullable=True),
             sa.Column('notes', sa.Text(), nullable=True),
@@ -65,12 +88,6 @@ def upgrade() -> None:
     else:
         print("=== CREATING engagement_posts table ===", flush=True)
 
-        engagement_post_status = sa.Enum(
-            'pending', 'done', 'edited', 'skipped',
-            name='engagement_post_status',
-        )
-        engagement_post_status.create(conn, checkfirst=True)
-
         op.create_table(
             'engagement_posts',
             sa.Column('id', sa.Uuid(), nullable=False, primary_key=True),
@@ -79,7 +96,10 @@ def upgrade() -> None:
             sa.Column('post_snippet', sa.Text(), nullable=True),
             sa.Column('post_summary', sa.Text(), nullable=True),
             sa.Column('draft_comment', sa.Text(), nullable=True),
-            sa.Column('status', engagement_post_status, nullable=False, server_default='pending'),
+            sa.Column('status', sa.Enum(
+                'pending', 'done', 'edited', 'skipped',
+                name='engagement_post_status', create_type=False,
+            ), nullable=False, server_default='pending'),
             sa.Column('slack_message_ts', sa.String(50), nullable=True),
             sa.Column('created_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
             sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
