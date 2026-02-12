@@ -22,6 +22,94 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/engagement", tags=["engagement"])
 
 
+@router.post("/run-migration-015")
+async def run_migration_015(
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Manually run migration 015 to create engagement tables."""
+    from sqlalchemy import text
+
+    # Check if tables already exist
+    result = await session.execute(text(
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_name = 'watched_profiles'"
+    ))
+    if result.fetchone():
+        # Check engagement_posts too
+        result2 = await session.execute(text(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_name = 'engagement_posts'"
+        ))
+        if result2.fetchone():
+            return {"status": "ok", "message": "Tables already exist"}
+
+    # Create enum types (idempotent)
+    await session.execute(text(
+        "DO $$ BEGIN "
+        "CREATE TYPE watched_profile_category AS ENUM "
+        "('prospect', 'influencer', 'icp_peer', 'competitor'); "
+        "EXCEPTION WHEN duplicate_object THEN NULL; END $$"
+    ))
+    await session.execute(text(
+        "DO $$ BEGIN "
+        "CREATE TYPE engagement_post_status AS ENUM "
+        "('pending', 'done', 'edited', 'skipped'); "
+        "EXCEPTION WHEN duplicate_object THEN NULL; END $$"
+    ))
+
+    # Create watched_profiles
+    await session.execute(text("""
+        CREATE TABLE IF NOT EXISTS watched_profiles (
+            id UUID PRIMARY KEY,
+            linkedin_url VARCHAR(500) NOT NULL,
+            name VARCHAR(255) NOT NULL,
+            headline TEXT,
+            category watched_profile_category NOT NULL DEFAULT 'prospect',
+            is_active BOOLEAN NOT NULL DEFAULT true,
+            last_checked_at TIMESTAMP WITH TIME ZONE,
+            notes TEXT,
+            created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+        )
+    """))
+    await session.execute(text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_watched_profiles_linkedin_url "
+        "ON watched_profiles (linkedin_url)"
+    ))
+
+    # Create engagement_posts
+    await session.execute(text("""
+        CREATE TABLE IF NOT EXISTS engagement_posts (
+            id UUID PRIMARY KEY,
+            watched_profile_id UUID NOT NULL REFERENCES watched_profiles(id),
+            post_url VARCHAR(500) NOT NULL,
+            post_snippet TEXT,
+            post_summary TEXT,
+            draft_comment TEXT,
+            status engagement_post_status NOT NULL DEFAULT 'pending',
+            slack_message_ts VARCHAR(50),
+            created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+        )
+    """))
+    await session.execute(text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_engagement_posts_post_url "
+        "ON engagement_posts (post_url)"
+    ))
+    await session.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_engagement_posts_watched_profile_id "
+        "ON engagement_posts (watched_profile_id)"
+    ))
+
+    # Update alembic version to 015 so future alembic runs skip this
+    await session.execute(text(
+        "UPDATE alembic_version SET version_num = '015' WHERE version_num = '014'"
+    ))
+
+    await session.commit()
+    return {"status": "ok", "message": "Tables created successfully"}
+
+
 # --- Schemas ---
 
 
