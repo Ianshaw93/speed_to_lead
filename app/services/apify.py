@@ -50,7 +50,7 @@ class ApifyService:
         try:
             run = self._client.actor(LINKEDIN_POSTS_ACTOR).call(
                 run_input={
-                    "profileUrls": linkedin_urls,
+                    "profiles": linkedin_urls,
                     "maxPosts": max_posts,
                 }
             )

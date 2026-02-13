@@ -30,7 +30,7 @@ class TestApifyService:
             mock_actor.assert_called_once_with("RE0MriXnFhR3IgVnJ")
             call_args = mock_actor.return_value.call.call_args
             run_input = call_args[1]["run_input"]
-            assert run_input["profileUrls"] == ["https://linkedin.com/in/test-user"]
+            assert run_input["profiles"] == ["https://linkedin.com/in/test-user"]
             assert run_input["maxPosts"] == 5
 
     def test_scrape_returns_all_results(self):
@@ -130,5 +130,5 @@ class TestApifyService:
             service.scrape_profile_posts(urls, max_posts=3)
 
             run_input = mock_actor.return_value.call.call_args[1]["run_input"]
-            assert run_input["profileUrls"] == urls
+            assert run_input["profiles"] == urls
             assert run_input["maxPosts"] == 3
