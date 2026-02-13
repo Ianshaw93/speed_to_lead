@@ -93,10 +93,9 @@ async def check_engagement_posts() -> dict:
             if all_posts:
                 first = all_posts[0]
                 logger.info(f"Sample post keys: {list(first.keys())}")
-                logger.info(f"Sample authorName type: {type(first.get('authorName'))}")
-                logger.info(f"Sample authorName value: {first.get('authorName')}")
-                logger.info(f"Sample postUrl: {first.get('postUrl')}")
-                logger.info(f"Sample authorProfileUrl: {first.get('authorProfileUrl')}")
+                logger.info(f"Sample author: {first.get('author')}")
+                logger.info(f"Sample url: {first.get('url')}")
+                logger.info(f"Sample input: {first.get('input')}")
 
             # 3-7. Process each post
             for item in all_posts:
@@ -160,27 +159,47 @@ async def _process_post(
     if existing.scalar_one_or_none():
         raise _AlreadySeen()
 
-    # Match post to a watched profile
-    author_url = item.get("authorProfileUrl") or item.get("profileUrl") or ""
-    if "?" in author_url:
-        author_url = author_url.split("?")[0]
-    author_url = author_url.rstrip("/").lower()
+    # Match post to a watched profile via input URL (the URL we asked Apify to scrape)
+    input_url = ""
+    raw_input = item.get("input")
+    if isinstance(raw_input, str):
+        input_url = raw_input.rstrip("/").lower()
+    elif isinstance(raw_input, dict):
+        input_url = (raw_input.get("url") or raw_input.get("profileUrl") or "").rstrip("/").lower()
 
     profile = None
-    for url, p in profile_map.items():
-        if url.rstrip("/").lower() == author_url:
-            profile = p
-            break
+    if input_url:
+        for url, p in profile_map.items():
+            if url.rstrip("/").lower() == input_url:
+                profile = p
+                break
+
+    # Fallback: try author profile URL from the author dict
+    if not profile:
+        author = item.get("author") or {}
+        author_url = ""
+        if isinstance(author, dict):
+            author_url = (author.get("profileUrl") or author.get("url") or "").rstrip("/").lower()
+        elif isinstance(author, str):
+            author_url = author.rstrip("/").lower()
+        if author_url:
+            for url, p in profile_map.items():
+                if url.rstrip("/").lower() in author_url or author_url in url.rstrip("/").lower():
+                    profile = p
+                    break
 
     # Fallback: try author name matching
     if not profile:
-        raw_name = item.get("authorName") or item.get("author") or ""
-        # Handle dict-shaped author names (e.g. {"first": "...", "last": "..."})
-        if isinstance(raw_name, dict):
-            parts = [raw_name.get("first", ""), raw_name.get("last", "")]
-            author_name = " ".join(p for p in parts if p).strip()
+        author = item.get("author") or {}
+        if isinstance(author, dict):
+            author_name = author.get("name") or author.get("fullName") or ""
+            if not author_name:
+                parts = [author.get("first", ""), author.get("last", "")]
+                author_name = " ".join(p for p in parts if p).strip()
+        elif isinstance(author, str):
+            author_name = author
         else:
-            author_name = str(raw_name)
+            author_name = ""
         if author_name:
             for p in profile_map.values():
                 if p.name.lower() in author_name.lower() or author_name.lower() in p.name.lower():
