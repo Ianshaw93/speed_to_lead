@@ -73,7 +73,7 @@ async def check_engagement_posts() -> dict:
                 all_posts = await asyncio.to_thread(
                     apify.scrape_profile_posts,
                     linkedin_urls=profile_urls,
-                    max_posts=5,
+                    max_posts=1,
                 )
             except ApifyError as e:
                 logger.error(f"Apify scrape failed: {e}", exc_info=True)
@@ -88,14 +88,6 @@ async def check_engagement_posts() -> dict:
 
             posts_found = len(all_posts)
             logger.info(f"Apify returned {posts_found} total posts")
-
-            # Log first item's structure for debugging
-            if all_posts:
-                first = all_posts[0]
-                logger.info(f"Sample post keys: {list(first.keys())}")
-                logger.info(f"Sample author: {first.get('author')}")
-                logger.info(f"Sample url: {first.get('url')}")
-                logger.info(f"Sample input: {first.get('input')}")
 
             # 3-7. Process each post
             for item in all_posts:
