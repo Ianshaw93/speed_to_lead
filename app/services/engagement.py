@@ -89,6 +89,15 @@ async def check_engagement_posts() -> dict:
             posts_found = len(all_posts)
             logger.info(f"Apify returned {posts_found} total posts")
 
+            # Log first item's structure for debugging
+            if all_posts:
+                first = all_posts[0]
+                logger.info(f"Sample post keys: {list(first.keys())}")
+                logger.info(f"Sample authorName type: {type(first.get('authorName'))}")
+                logger.info(f"Sample authorName value: {first.get('authorName')}")
+                logger.info(f"Sample postUrl: {first.get('postUrl')}")
+                logger.info(f"Sample authorProfileUrl: {first.get('authorProfileUrl')}")
+
             # 3-7. Process each post
             for item in all_posts:
                 try:
@@ -165,11 +174,18 @@ async def _process_post(
 
     # Fallback: try author name matching
     if not profile:
-        author_name = item.get("authorName") or item.get("author") or ""
-        for p in profile_map.values():
-            if p.name.lower() in author_name.lower() or author_name.lower() in p.name.lower():
-                profile = p
-                break
+        raw_name = item.get("authorName") or item.get("author") or ""
+        # Handle dict-shaped author names (e.g. {"first": "...", "last": "..."})
+        if isinstance(raw_name, dict):
+            parts = [raw_name.get("first", ""), raw_name.get("last", "")]
+            author_name = " ".join(p for p in parts if p).strip()
+        else:
+            author_name = str(raw_name)
+        if author_name:
+            for p in profile_map.values():
+                if p.name.lower() in author_name.lower() or author_name.lower() in p.name.lower():
+                    profile = p
+                    break
 
     if not profile:
         # Post doesn't match any watched profile - use first profile as fallback
