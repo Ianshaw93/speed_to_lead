@@ -89,8 +89,24 @@ async def check_engagement_posts() -> dict:
             posts_found = len(all_posts)
             logger.info(f"Apify returned {posts_found} total posts")
 
-            # 3-7. Process each post
+            # Keep only the newest post per profile (first result per input URL)
+            seen_profiles: set[str] = set()
+            filtered_posts = []
             for item in all_posts:
+                input_url = item.get("input", "")
+                if isinstance(input_url, dict):
+                    input_url = input_url.get("url", "")
+                input_key = input_url.rstrip("/").lower()
+                if input_key and input_key in seen_profiles:
+                    continue
+                if input_key:
+                    seen_profiles.add(input_key)
+                filtered_posts.append(item)
+
+            logger.info(f"Filtered to {len(filtered_posts)} posts (1 per profile)")
+
+            # 3-7. Process each post
+            for item in filtered_posts:
                 try:
                     notified = await _process_post(session, item, profile_map, apify)
                     if notified:
