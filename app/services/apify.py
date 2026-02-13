@@ -1,8 +1,6 @@
-"""Apify service for searching LinkedIn posts via Google Search actor."""
+"""Apify service for scraping LinkedIn profile posts."""
 
 import logging
-import re
-from datetime import datetime, timedelta
 
 from apify_client import ApifyClient
 
@@ -10,7 +8,8 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-GOOGLE_SEARCH_ACTOR = "nFJndFXA5zjCTuudP"
+# datadoping/linkedin-profile-posts-scraper (No Cookie)
+LINKEDIN_POSTS_ACTOR = "RE0MriXnFhR3IgVnJ"
 
 
 class ApifyError(Exception):
@@ -22,84 +21,71 @@ class ApifyError(Exception):
 class ApifyService:
     """Service for interacting with Apify actors."""
 
-    def __init__(self, api_key: str | None = None):
-        self._api_key = api_key or settings.apify_api_key
-        self._client = ApifyClient(self._api_key)
+    def __init__(self, api_token: str | None = None):
+        self._api_token = api_token or settings.apify_api_token
+        self._client = ApifyClient(self._api_token)
 
-    def search_linkedin_posts(
+    def scrape_profile_posts(
         self,
-        author_name: str,
-        days_back: int = 3,
-        max_results: int = 5,
+        linkedin_urls: list[str],
+        max_posts: int = 10,
     ) -> list[dict]:
-        """Search for recent LinkedIn posts by an author using Google Search.
+        """Scrape recent posts from LinkedIn profiles.
 
         This is a synchronous call (Apify client is sync). Callers should
         wrap in asyncio.to_thread() for async usage.
 
         Args:
-            author_name: Name of the LinkedIn post author.
-            days_back: How many days back to search.
-            max_results: Maximum number of results per page.
+            linkedin_urls: List of LinkedIn profile URLs to scrape.
+            max_posts: Maximum posts per profile.
 
         Returns:
-            List of result dicts with 'url', 'title', 'description' keys.
+            List of post dicts from the actor output.
 
         Raises:
             ApifyError: If the actor run fails.
         """
-        date_cutoff = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
-        query = f'site:linkedin.com/posts "{author_name}" after:{date_cutoff}'
-
-        logger.info(f"Apify search: {query}")
+        logger.info(f"Apify scraping posts for {len(linkedin_urls)} profiles")
 
         try:
-            run = self._client.actor(GOOGLE_SEARCH_ACTOR).call(
+            run = self._client.actor(LINKEDIN_POSTS_ACTOR).call(
                 run_input={
-                    "queries": query,
-                    "maxPagesPerQuery": 1,
-                    "resultsPerPage": max_results,
-                    "mobileResults": False,
+                    "profileUrls": linkedin_urls,
+                    "maxPosts": max_posts,
                 }
             )
 
-            results = []
-            for item in self._client.dataset(run["defaultDatasetId"]).iterate_items():
-                organic = item.get("organicResults", [])
-                if isinstance(organic, list):
-                    results.extend(organic)
-                elif isinstance(organic, dict):
-                    results.append(organic)
+            results = list(
+                self._client.dataset(run["defaultDatasetId"]).iterate_items()
+            )
 
-            # Filter to actual LinkedIn post URLs and extract data
-            posts = []
-            for r in results:
-                url = r.get("url", "")
-                if not self._is_linkedin_post_url(url):
-                    continue
-                posts.append({
-                    "url": self._normalize_post_url(url),
-                    "title": r.get("title", ""),
-                    "description": r.get("description", ""),
-                })
-
-            logger.info(f"Found {len(posts)} LinkedIn posts for '{author_name}'")
-            return posts
+            logger.info(f"Apify returned {len(results)} posts")
+            return results
 
         except Exception as e:
-            raise ApifyError(f"Apify search failed for '{author_name}': {e}") from e
+            raise ApifyError(f"Apify scrape failed: {e}") from e
 
     @staticmethod
-    def _is_linkedin_post_url(url: str) -> bool:
-        """Check if a URL is a LinkedIn post URL."""
-        return bool(re.search(r"linkedin\.com/(posts|feed/update)", url))
-
-    @staticmethod
-    def _normalize_post_url(url: str) -> str:
-        """Normalize a LinkedIn post URL by removing query params."""
+    def extract_post_url(item: dict) -> str | None:
+        """Extract and normalize the post URL from an actor result item."""
+        url = item.get("postUrl") or item.get("url") or item.get("post_url") or ""
+        if not url:
+            return None
+        # Strip query params
         if "?" in url:
             url = url.split("?")[0]
         return url
+
+    @staticmethod
+    def extract_post_text(item: dict) -> str:
+        """Extract post text/content from an actor result item."""
+        return (
+            item.get("text")
+            or item.get("postText")
+            or item.get("content")
+            or item.get("description")
+            or ""
+        )
 
 
 # Global singleton

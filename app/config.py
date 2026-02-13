@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     slack_signing_secret: str = ""
 
     # Apify
-    apify_api_key: str = ""
+    apify_api_token: str = ""
 
     # Database
     database_url: str = "sqlite+aiosqlite:///./speed_to_lead.db"

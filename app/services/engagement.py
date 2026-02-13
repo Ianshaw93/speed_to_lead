@@ -6,6 +6,7 @@ and draft comments, and sends them to Slack for approval.
 
 import asyncio
 import logging
+import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -13,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import async_session_factory
 from app.models import EngagementPost, WatchedProfile
-from app.services.apify import ApifyError, get_apify_service
+from app.services.apify import ApifyError, ApifyService, get_apify_service
 from app.services.deepseek import DeepSeekError, get_deepseek_client
 from app.services.slack import SlackError, get_slack_bot
 
@@ -25,7 +26,7 @@ async def check_engagement_posts() -> dict:
 
     Flow:
     1. Fetch active WatchedProfiles from DB
-    2. For each, search recent posts via Apify (in thread)
+    2. Scrape recent posts via Apify LinkedIn profile posts scraper
     3. Skip already-seen posts (unique constraint on post_url)
     4. For new posts: call DeepSeek for summary + draft comment
     5. Send Slack notification to engagement channel
@@ -63,15 +64,49 @@ async def check_engagement_posts() -> dict:
 
             logger.info(f"Checking {len(profiles)} active profiles")
 
-            for profile in profiles:
+            # 2. Scrape posts for all profiles in one Apify call
+            profile_urls = [p.linkedin_url for p in profiles]
+            profile_map = {p.linkedin_url: p for p in profiles}
+
+            apify = get_apify_service()
+            try:
+                all_posts = await asyncio.to_thread(
+                    apify.scrape_profile_posts,
+                    linkedin_urls=profile_urls,
+                    max_posts=5,
+                )
+            except ApifyError as e:
+                logger.error(f"Apify scrape failed: {e}", exc_info=True)
+                errors.append(f"Apify: {e}")
+                return {
+                    "profiles_checked": 0,
+                    "posts_found": 0,
+                    "posts_new": 0,
+                    "posts_notified": 0,
+                    "errors": errors[:10],
+                }
+
+            posts_found = len(all_posts)
+            logger.info(f"Apify returned {posts_found} total posts")
+
+            # 3-7. Process each post
+            for item in all_posts:
                 try:
-                    new_count = await _check_profile(session, profile)
-                    profiles_checked += 1
-                    posts_notified += new_count
+                    notified = await _process_post(session, item, profile_map, apify)
+                    if notified:
+                        posts_notified += 1
+                    posts_new += 1
+                except _AlreadySeen:
+                    continue
                 except Exception as e:
-                    error_msg = f"Error checking {profile.name}: {e}"
+                    error_msg = f"Error processing post: {e}"
                     logger.error(error_msg, exc_info=True)
                     errors.append(error_msg)
+
+            # Update last_checked_at for all profiles
+            for profile in profiles:
+                profile.last_checked_at = datetime.now(timezone.utc)
+                profiles_checked += 1
 
             await session.commit()
 
@@ -90,109 +125,101 @@ async def check_engagement_posts() -> dict:
     return summary
 
 
-async def _check_profile(session: AsyncSession, profile: WatchedProfile) -> int:
-    """Check a single profile for new posts and send notifications.
+class _AlreadySeen(Exception):
+    pass
 
-    Args:
-        session: Database session.
-        profile: The watched profile to check.
 
-    Returns:
-        Number of new posts notified.
+async def _process_post(
+    session: AsyncSession,
+    item: dict,
+    profile_map: dict[str, WatchedProfile],
+    apify: ApifyService,
+) -> bool:
+    """Process a single post from Apify results.
+
+    Returns True if a Slack notification was sent.
+    Raises _AlreadySeen if the post URL was already in the DB.
     """
-    logger.info(f"Checking profile: {profile.name} ({profile.category.value})")
+    post_url = apify.extract_post_url(item)
+    if not post_url:
+        return False
 
-    # 2. Search for posts via Apify (sync call wrapped in thread)
-    apify = get_apify_service()
+    # 3. Skip already-seen posts
+    existing = await session.execute(
+        select(EngagementPost).where(EngagementPost.post_url == post_url)
+    )
+    if existing.scalar_one_or_none():
+        raise _AlreadySeen()
+
+    # Match post to a watched profile
+    author_url = item.get("authorProfileUrl") or item.get("profileUrl") or ""
+    if "?" in author_url:
+        author_url = author_url.split("?")[0]
+    author_url = author_url.rstrip("/").lower()
+
+    profile = None
+    for url, p in profile_map.items():
+        if url.rstrip("/").lower() == author_url:
+            profile = p
+            break
+
+    # Fallback: try author name matching
+    if not profile:
+        author_name = item.get("authorName") or item.get("author") or ""
+        for p in profile_map.values():
+            if p.name.lower() in author_name.lower() or author_name.lower() in p.name.lower():
+                profile = p
+                break
+
+    if not profile:
+        # Post doesn't match any watched profile - use first profile as fallback
+        profile = list(profile_map.values())[0]
+        logger.warning(f"Could not match post to profile, using fallback: {profile.name}")
+
+    snippet = apify.extract_post_text(item)
+
+    # 4. Call DeepSeek for summary + draft comment
+    summary = ""
+    draft_comment = ""
     try:
-        search_results = await asyncio.to_thread(
-            apify.search_linkedin_posts,
+        deepseek = get_deepseek_client()
+        summary, draft_comment = await deepseek.summarize_and_draft_comment(
             author_name=profile.name,
-            days_back=3,
-            max_results=5,
+            author_headline=profile.headline,
+            author_category=profile.category.value,
+            post_snippet=snippet[:2000],  # Truncate very long posts
         )
-    except ApifyError as e:
-        logger.error(f"Apify search failed for {profile.name}: {e}")
-        return 0
+    except DeepSeekError as e:
+        logger.error(f"DeepSeek error for {post_url}: {e}")
 
-    if not search_results:
-        logger.info(f"No posts found for {profile.name}")
-        # Update last_checked_at even if no posts
-        profile.last_checked_at = datetime.now(timezone.utc)
-        return 0
-
-    logger.info(f"Found {len(search_results)} posts for {profile.name}")
-
-    notified = 0
-
-    for post_data in search_results:
-        post_url = post_data["url"]
-
-        # 3. Skip already-seen posts
-        existing = await session.execute(
-            select(EngagementPost).where(EngagementPost.post_url == post_url)
-        )
-        if existing.scalar_one_or_none():
-            logger.debug(f"Already seen post: {post_url}")
-            continue
-
-        # Build post snippet from search result
-        snippet = post_data.get("description", "") or post_data.get("title", "")
-
-        # 4. Call DeepSeek for summary + draft comment
+    # 5. Send Slack notification
+    post_id = uuid.uuid4()
+    slack_ts = None
+    if summary and draft_comment:
         try:
-            deepseek = get_deepseek_client()
-            summary, draft_comment = await deepseek.summarize_and_draft_comment(
+            slack_bot = get_slack_bot()
+            slack_ts = await slack_bot.send_engagement_notification(
+                post_id=post_id,
                 author_name=profile.name,
                 author_headline=profile.headline,
-                author_category=profile.category.value,
-                post_snippet=snippet,
+                author_category=profile.category,
+                post_url=post_url,
+                post_summary=summary,
+                draft_comment=draft_comment,
             )
-        except DeepSeekError as e:
-            logger.error(f"DeepSeek error for {post_url}: {e}")
-            # Store the post anyway with empty summary/comment
-            summary = ""
-            draft_comment = ""
+        except SlackError as e:
+            logger.error(f"Slack error for {post_url}: {e}")
 
-        # 5. Send Slack notification
-        slack_ts = None
-        if summary and draft_comment:
-            try:
-                slack_bot = get_slack_bot()
-                # Pre-generate the post ID for the Slack buttons
-                import uuid
-                post_id = uuid.uuid4()
+    # 6. Store EngagementPost record
+    engagement_post = EngagementPost(
+        id=post_id,
+        watched_profile_id=profile.id,
+        post_url=post_url,
+        post_snippet=snippet[:2000] if snippet else None,
+        post_summary=summary,
+        draft_comment=draft_comment,
+        slack_message_ts=slack_ts,
+    )
+    session.add(engagement_post)
 
-                slack_ts = await slack_bot.send_engagement_notification(
-                    post_id=post_id,
-                    author_name=profile.name,
-                    author_headline=profile.headline,
-                    author_category=profile.category,
-                    post_url=post_url,
-                    post_summary=summary,
-                    draft_comment=draft_comment,
-                )
-                notified += 1
-            except SlackError as e:
-                logger.error(f"Slack error for {post_url}: {e}")
-                post_id = uuid.uuid4()
-        else:
-            import uuid
-            post_id = uuid.uuid4()
-
-        # 6. Store EngagementPost record
-        engagement_post = EngagementPost(
-            id=post_id,
-            watched_profile_id=profile.id,
-            post_url=post_url,
-            post_snippet=snippet,
-            post_summary=summary,
-            draft_comment=draft_comment,
-            slack_message_ts=slack_ts,
-        )
-        session.add(engagement_post)
-
-    # 7. Update last_checked_at
-    profile.last_checked_at = datetime.now(timezone.utc)
-
-    return notified
+    return slack_ts is not None
