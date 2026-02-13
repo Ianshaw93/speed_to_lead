@@ -351,3 +351,16 @@ async def list_engagement_posts(
         ],
         "count": len(posts),
     }
+
+
+@router.delete("/posts/clear")
+async def clear_engagement_posts(
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Clear all engagement posts (for re-testing)."""
+    from sqlalchemy import delete
+
+    result = await session.execute(delete(EngagementPost))
+    await session.commit()
+
+    return {"status": "cleared", "deleted": result.rowcount}

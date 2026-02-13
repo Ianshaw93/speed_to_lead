@@ -229,12 +229,18 @@ class DeepSeekClient:
 
             content = completion.choices[0].message.content
 
-            # Parse JSON response
+            # Parse JSON response (strip markdown code fences if present)
             try:
-                data = json.loads(content)
+                clean = content.strip()
+                if clean.startswith("```"):
+                    # Remove opening fence (e.g. ```json)
+                    clean = clean.split("\n", 1)[1] if "\n" in clean else clean[3:]
+                if clean.endswith("```"):
+                    clean = clean[:-3]
+                data = json.loads(clean.strip())
                 summary = data.get("summary", "")
                 comment = data.get("comment", "")
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, IndexError):
                 # Fallback: use the raw content as both
                 summary = "Could not parse summary"
                 comment = content
