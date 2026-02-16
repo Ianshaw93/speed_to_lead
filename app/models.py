@@ -60,6 +60,7 @@ class ProspectSource(str, enum.Enum):
     COLD_OUTREACH = "cold_outreach"  # From cold outreach keyword search
     SALES_NAV = "sales_nav"  # From LinkedIn Sales Navigator
     VAYNE = "vayne"  # From Vayne leads
+    BUYING_SIGNAL = "buying_signal"  # From Gojiberry buying signal agent
     MANUAL = "manual"  # Manually added
     OTHER = "other"
 
@@ -258,6 +259,10 @@ class Prospect(Base):
 
     # Outreach data
     personalized_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("prompt_versions.id"),
+        nullable=True,
+    )
     icp_match: Mapped[bool | None] = mapped_column(nullable=True)
     icp_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -451,6 +456,21 @@ class WatchedProfile(Base):
     )
 
 
+class ChangelogCategory(str, enum.Enum):
+    """Category of a changelog entry."""
+
+    PROMPT = "prompt"                    # Prompt template changes
+    ICP_FILTER = "icp_filter"            # ICP criteria, hardcoded lists, thresholds
+    PROSPECT_SOURCE = "prospect_source"  # New sources added/modified
+    PIPELINE_CONFIG = "pipeline_config"  # Country filters, min_reactions, model params
+    VALIDATION = "validation"            # Scoring thresholds, validation rules
+    MODEL = "model"                      # LLM model switches
+    AB_TEST = "ab_test"                  # A/B test configurations
+    INFRASTRUCTURE = "infrastructure"    # New scripts, endpoints, webhooks
+    HEYREACH = "heyreach"               # Campaign config, list IDs
+    STAGE_PROMPT = "stage_prompt"        # Reply stage detection/generation prompts
+
+
 class EngagementPost(Base):
     """A LinkedIn post found from a watched profile, with draft comment."""
 
@@ -491,4 +511,45 @@ class EngagementPost(Base):
     # Relationships
     watched_profile: Mapped["WatchedProfile"] = relationship(
         back_populates="engagement_posts"
+    )
+
+
+class PromptVersion(Base):
+    """Snapshot of a prompt template for linking to prospects."""
+
+    __tablename__ = "prompt_versions"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    prompt_name: Mapped[str] = mapped_column(String(255), index=True)  # e.g. "LINKEDIN_5_LINE_DM_PROMPT"
+    prompt_hash: Mapped[str] = mapped_column(String(64), unique=True)  # SHA256
+    content: Mapped[str] = mapped_column(Text)
+    git_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class Changelog(Base):
+    """Tracks all changes affecting outreach results."""
+
+    __tablename__ = "changelog"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)  # when change happened
+    category: Mapped[ChangelogCategory] = mapped_column(
+        Enum(
+            ChangelogCategory,
+            name="changelog_category",
+            values_callable=lambda x: [e.value for e in x],
+        ),
+    )
+    component: Mapped[str] = mapped_column(String(255))  # e.g. "LINKEDIN_5_LINE_DM_PROMPT", "competitor_post_pipeline"
+    change_type: Mapped[str] = mapped_column(String(50))  # added, modified, removed
+    description: Mapped[str] = mapped_column(Text)
+    details: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)  # structured metadata
+    git_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
     )

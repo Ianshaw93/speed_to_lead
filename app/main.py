@@ -37,6 +37,7 @@ try:
     from app.routers.slack import router as slack_router
     from app.routers.metrics import router as metrics_router
     from app.routers.engagement import router as engagement_router
+    from app.routers.changelog import router as changelog_router
     logger.info("Routers imported")
 except Exception as e:
     logger.error(f"Import failed: {e}", exc_info=True)
@@ -76,6 +77,7 @@ app = FastAPI(
 app.include_router(slack_router)
 app.include_router(metrics_router)
 app.include_router(engagement_router)
+app.include_router(changelog_router)
 
 
 @app.middleware("http")
@@ -1170,29 +1172,62 @@ BUYING_SIGNAL_LOG = os.path.join(".tmp", "buying_signal_payloads.jsonl")
 
 @app.post("/buying-signal")
 async def receive_buying_signal(request: Request) -> dict:
-    """Receives prospect payloads from buying signal agent.
+    """Receives prospect payloads from buying signal agent and persists to DB.
 
-    Logs raw payload to .tmp/buying_signal_payloads.jsonl for inspection.
+    Also logs raw payload to .tmp/buying_signal_payloads.jsonl for debugging.
     """
     import json as _json
     data = await request.json()
+    received_at = datetime.now(timezone.utc).isoformat()
 
-    entry = {
-        "received_at": datetime.now(timezone.utc).isoformat(),
-        "payload": data,
-    }
-
+    # Log raw payload for debugging
+    entry = {"received_at": received_at, "payload": data}
     os.makedirs(".tmp", exist_ok=True)
     with open(BUYING_SIGNAL_LOG, "a") as f:
         f.write(_json.dumps(entry) + "\n")
 
-    logger.info(f"Buying signal received: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}")
+    if not isinstance(data, dict):
+        logger.warning("Buying signal payload is not a dict, skipping DB insert")
+        return {"status": "received", "received_at": received_at, "persisted": False}
 
-    return {
-        "status": "received",
-        "received_at": entry["received_at"],
-        "fields_received": list(data.keys()) if isinstance(data, dict) else [],
-    }
+    # Build linkedin_url from vanity identifier
+    li_identifier = data.get("linkedinIdentifier", "")
+    if not li_identifier:
+        logger.warning("No linkedinIdentifier in buying signal, skipping DB insert")
+        return {"status": "received", "received_at": received_at, "persisted": False}
+
+    linkedin_url = normalize_linkedin_url(f"https://linkedin.com/in/{li_identifier}")
+
+    async with async_session_factory() as session:
+        # Skip if already exists
+        existing = await session.execute(
+            select(Prospect).where(Prospect.linkedin_url == linkedin_url)
+        )
+        if existing.scalar_one_or_none():
+            logger.info(f"Buying signal duplicate skipped: {linkedin_url}")
+            return {"status": "duplicate", "received_at": received_at, "linkedin_url": linkedin_url}
+
+        prospect = Prospect(
+            linkedin_url=linkedin_url,
+            full_name=data.get("fullName"),
+            first_name=data.get("firstName"),
+            last_name=data.get("lastName"),
+            job_title=data.get("jobTitle"),
+            company_name=data.get("company"),
+            company_industry=data.get("industry"),
+            location=data.get("location"),
+            headline=data.get("profileBaseline"),
+            email=data.get("email"),
+            source_type=ProspectSource.BUYING_SIGNAL,
+            source_keyword=data.get("intent_keyword"),
+            icp_match=True,
+            icp_reason=data.get("score_reasoning"),
+        )
+        session.add(prospect)
+        await session.commit()
+
+    logger.info(f"Buying signal persisted: {linkedin_url}")
+    return {"status": "created", "received_at": received_at, "linkedin_url": linkedin_url}
 
 
 @app.get("/buying-signal/log")
