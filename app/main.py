@@ -1230,6 +1230,40 @@ async def receive_buying_signal(request: Request) -> dict:
     return {"status": "created", "received_at": received_at, "linkedin_url": linkedin_url}
 
 
+@app.post("/buying-signal/process")
+async def trigger_buying_signal_outreach(
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> dict:
+    """Manually trigger buying signal outreach batch processing.
+
+    Same logic as the scheduled 7am EST job. Runs in background.
+    """
+    from app.services.buying_signal_outreach import process_buying_signal_batch
+
+    async def _run():
+        try:
+            result = await process_buying_signal_batch()
+            logger.info(f"Manual buying signal batch result: {result}")
+
+            # Send Slack summary
+            from app.services.slack import get_slack_bot
+            bot = get_slack_bot()
+            summary = (
+                f"*Buying Signal Outreach Batch Complete (manual trigger)*\n"
+                f"- Prospects processed: {result['processed']}\n"
+                f"- Messages generated: {result['messages_generated']}\n"
+                f"- Uploaded to HeyReach: {result['uploaded']}\n"
+                f"- Errors: {result['errors']}"
+            )
+            await bot.send_confirmation(summary)
+        except Exception as e:
+            logger.error(f"Manual buying signal batch failed: {e}", exc_info=True)
+
+    background_tasks.add_task(_run)
+    return {"status": "processing", "message": "Buying signal batch triggered"}
+
+
 @app.get("/buying-signal/log")
 async def view_buying_signal_log(limit: int = 20) -> dict:
     """View recent buying signal payloads for format inspection."""

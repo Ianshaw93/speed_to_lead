@@ -76,6 +76,38 @@ async def send_daily_report_task() -> None:
         logger.error(f"Failed to send daily report: {e}", exc_info=True)
 
 
+async def process_buying_signals_task() -> None:
+    """Process unprocessed buying signal prospects. Runs daily at 7am EST."""
+    import logging
+    from app.services.buying_signal_outreach import process_buying_signal_batch
+    from app.services.slack import get_slack_bot
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        result = await process_buying_signal_batch()
+
+        # Send Slack summary
+        bot = get_slack_bot()
+        summary = (
+            f"*Buying Signal Outreach Batch Complete*\n"
+            f"- Prospects processed: {result['processed']}\n"
+            f"- Messages generated: {result['messages_generated']}\n"
+            f"- Uploaded to HeyReach: {result['uploaded']}\n"
+            f"- Errors: {result['errors']}"
+        )
+        await bot.send_confirmation(summary)
+        logger.info(f"Buying signal batch completed: {result}")
+
+    except Exception as e:
+        logger.error(f"Failed to process buying signals: {e}", exc_info=True)
+        try:
+            bot = get_slack_bot()
+            await bot.send_confirmation(f"*Buying Signal Outreach FAILED*\nError: {e}")
+        except Exception:
+            pass
+
+
 async def check_engagement_task() -> None:
     """Check for new LinkedIn posts from watched profiles. Called by scheduler."""
     import logging
@@ -159,6 +191,20 @@ class SchedulerService:
             name='LinkedIn engagement check',
             replace_existing=True,
             misfire_grace_time=3600,  # 1 hour grace
+        )
+
+        # Buying signal outreach at 7am EST daily
+        self._scheduler.add_job(
+            process_buying_signals_task,
+            trigger=CronTrigger(
+                hour=7,
+                minute=0,
+                timezone='US/Eastern',
+            ),
+            id='buying_signal_outreach',
+            name='Buying signal outreach batch',
+            replace_existing=True,
+            misfire_grace_time=3600,
         )
 
         # Weekly report on Monday 9am UK time
