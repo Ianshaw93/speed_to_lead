@@ -78,27 +78,24 @@ def upgrade() -> None:
         op.create_index('ix_prompt_versions_prompt_name', 'prompt_versions', ['prompt_name'])
         op.create_index('ix_prompt_versions_prompt_hash', 'prompt_versions', ['prompt_hash'], unique=True)
 
-    # Create changelog table
+    # Create changelog table using raw SQL to avoid SQLAlchemy auto-creating the enum
     if _table_exists(conn, 'changelog'):
         print("=== changelog table already exists ===", flush=True)
     else:
         print("=== CREATING changelog table ===", flush=True)
-        op.create_table(
-            'changelog',
-            sa.Column('id', sa.Uuid(), nullable=False, primary_key=True),
-            sa.Column('timestamp', sa.DateTime(timezone=True), nullable=False),
-            sa.Column('category', sa.Enum(
-                'prompt', 'icp_filter', 'prospect_source', 'pipeline_config',
-                'validation', 'model', 'ab_test', 'infrastructure', 'heyreach', 'stage_prompt',
-                name='changelog_category', create_type=False,
-            ), nullable=False),
-            sa.Column('component', sa.String(255), nullable=False),
-            sa.Column('change_type', sa.String(50), nullable=False),
-            sa.Column('description', sa.Text(), nullable=False),
-            sa.Column('details', sa.JSON(), nullable=True),
-            sa.Column('git_commit', sa.String(40), nullable=True),
-            sa.Column('created_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        )
+        conn.execute(sa.text("""
+            CREATE TABLE changelog (
+                id UUID NOT NULL PRIMARY KEY,
+                "timestamp" TIMESTAMP WITH TIME ZONE NOT NULL,
+                category changelog_category NOT NULL,
+                component VARCHAR(255) NOT NULL,
+                change_type VARCHAR(50) NOT NULL,
+                description TEXT NOT NULL,
+                details JSON,
+                git_commit VARCHAR(40),
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+            )
+        """))
         op.create_index('ix_changelog_timestamp', 'changelog', ['timestamp'])
 
     # Add prompt_version_id column to prospects
