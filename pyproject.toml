@@ -24,6 +24,7 @@ dependencies = [
     "apscheduler>=3.10.4,<4.0.0",
     "python-dotenv>=1.0.0,<2.0.0",
     "apify-client>=1.6.0,<2.0.0",
+    "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]
