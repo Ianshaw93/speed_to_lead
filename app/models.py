@@ -310,6 +310,9 @@ class Prospect(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # Pitched channel tracking
+    pitched_slack_ts: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     slack_channel_id: str = ""
     slack_metrics_channel_id: str = ""  # For daily/weekly reports (falls back to slack_channel_id)
     slack_engagement_channel_id: str = ""  # For LinkedIn engagement notifications
+    slack_pitched_channel_id: str = ""  # For pitched+ prospect tracking cards
     slack_signing_secret: str = ""
 
     # Apify

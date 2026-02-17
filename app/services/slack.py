@@ -534,6 +534,126 @@ CATEGORY_DISPLAY = {
 }
 
 
+def build_pitched_card_blocks(
+    lead_name: str,
+    lead_title: str | None,
+    lead_company: str | None,
+    linkedin_url: str,
+    funnel_stage: FunnelStage,
+    recent_messages: list[dict[str, str]] | None = None,
+) -> list[dict[str, Any]]:
+    """Build Slack Block Kit message for a pitched channel card.
+
+    Args:
+        lead_name: Name of the lead.
+        lead_title: Lead's job title (optional).
+        lead_company: Lead's company (optional).
+        linkedin_url: LinkedIn profile URL.
+        funnel_stage: Current funnel stage.
+        recent_messages: List of recent inbound messages with 'content' key.
+
+    Returns:
+        List of Slack Block Kit blocks.
+    """
+    # Build header with lead info
+    header_text = lead_name
+    if lead_title and lead_company:
+        header_text = f"{lead_name} ({lead_title} @ {lead_company})"
+    elif lead_title:
+        header_text = f"{lead_name} ({lead_title})"
+    elif lead_company:
+        header_text = f"{lead_name} @ {lead_company}"
+
+    # Truncate header if too long for Slack (150 char limit for plain_text headers)
+    if len(header_text) > 148:
+        header_text = header_text[:145] + "..."
+
+    stage_label, stage_desc = STAGE_DISPLAY.get(
+        funnel_stage, (funnel_stage.value, "")
+    )
+
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": header_text,
+                "emoji": True,
+            },
+        },
+        {
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn", "text": f"*Status:* {stage_label} - {stage_desc}"}
+            ],
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*LinkedIn:* <{linkedin_url}|View Profile>",
+            },
+        },
+    ]
+
+    # Add recent inbound messages
+    if recent_messages:
+        msg_lines = []
+        for msg in recent_messages[:3]:
+            content = msg.get("content", "")
+            if len(content) > 200:
+                content = content[:197] + "..."
+            msg_lines.append(f"> _{content}_")
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "*Recent Messages:*\n" + "\n".join(msg_lines),
+            },
+        })
+
+    blocks.append({"type": "divider"})
+
+    return blocks
+
+
+def build_pitched_card_buttons(prospect_id: uuid.UUID) -> list[dict[str, Any]]:
+    """Build action buttons for pitched channel card.
+
+    Args:
+        prospect_id: The prospect ID for action values.
+
+    Returns:
+        List of Slack Block Kit action blocks.
+    """
+    return [
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Send Message", "emoji": True},
+                    "style": "primary",
+                    "action_id": "pitched_send_message",
+                    "value": str(prospect_id),
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Calendar Sent", "emoji": True},
+                    "action_id": "pitched_calendar_sent",
+                    "value": str(prospect_id),
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Booked", "emoji": True},
+                    "action_id": "pitched_booked",
+                    "value": str(prospect_id),
+                },
+            ],
+        }
+    ]
+
+
 def build_engagement_message(
     author_name: str,
     author_headline: str | None,
@@ -655,6 +775,7 @@ class SlackBot:
         channel_id: str | None = None,
         metrics_channel_id: str | None = None,
         engagement_channel_id: str | None = None,
+        pitched_channel_id: str | None = None,
     ):
         """Initialize the Slack bot.
 
@@ -663,6 +784,7 @@ class SlackBot:
             channel_id: Channel ID for draft notifications. Defaults to settings value.
             metrics_channel_id: Channel ID for metrics reports. Defaults to settings value.
             engagement_channel_id: Channel ID for engagement notifications. Defaults to settings value.
+            pitched_channel_id: Channel ID for pitched prospect cards. Defaults to settings value.
         """
         self._bot_token = bot_token or settings.slack_bot_token
         self._channel_id = channel_id or settings.slack_channel_id
@@ -674,6 +796,11 @@ class SlackBot:
         self._engagement_channel_id = (
             engagement_channel_id
             or settings.slack_engagement_channel_id
+            or self._channel_id
+        )
+        self._pitched_channel_id = (
+            pitched_channel_id
+            or settings.slack_pitched_channel_id
             or self._channel_id
         )
         self._client = AsyncWebClient(token=self._bot_token)
@@ -1061,6 +1188,186 @@ class SlackBot:
             raise SlackError(f"Failed to open Not ICP modal: {e.response['error']}") from e
         except Exception as e:
             raise SlackError(f"Failed to open Not ICP modal: {e}") from e
+
+    async def send_pitched_card(
+        self,
+        prospect_id: uuid.UUID,
+        lead_name: str,
+        lead_title: str | None,
+        lead_company: str | None,
+        linkedin_url: str,
+        funnel_stage: FunnelStage,
+        recent_messages: list[dict[str, str]] | None = None,
+    ) -> str:
+        """Post a pitched prospect card to the pitched channel.
+
+        Args:
+            prospect_id: The prospect ID for button actions.
+            lead_name: Name of the lead.
+            lead_title: Lead's job title.
+            lead_company: Lead's company.
+            linkedin_url: LinkedIn profile URL.
+            funnel_stage: Current funnel stage.
+            recent_messages: Recent inbound messages.
+
+        Returns:
+            The Slack message timestamp (ts).
+
+        Raises:
+            SlackError: If sending fails.
+        """
+        try:
+            blocks = build_pitched_card_blocks(
+                lead_name=lead_name,
+                lead_title=lead_title,
+                lead_company=lead_company,
+                linkedin_url=linkedin_url,
+                funnel_stage=funnel_stage,
+                recent_messages=recent_messages,
+            )
+            blocks.extend(build_pitched_card_buttons(prospect_id))
+
+            response = await self._client.chat_postMessage(
+                channel=self._pitched_channel_id,
+                blocks=blocks,
+                text=f"Pitched: {lead_name}",
+            )
+
+            return response["ts"]
+
+        except SlackApiError as e:
+            raise SlackError(f"Failed to send pitched card: {e.response['error']}") from e
+        except Exception as e:
+            raise SlackError(f"Failed to send pitched card: {e}") from e
+
+    async def update_pitched_card(
+        self,
+        message_ts: str,
+        prospect_id: uuid.UUID,
+        lead_name: str,
+        lead_title: str | None,
+        lead_company: str | None,
+        linkedin_url: str,
+        funnel_stage: FunnelStage,
+        recent_messages: list[dict[str, str]] | None = None,
+    ) -> None:
+        """Update an existing pitched card in the pitched channel.
+
+        If stage is BOOKED, replaces buttons with confirmation context.
+
+        Args:
+            message_ts: The message timestamp to update.
+            prospect_id: The prospect ID for button actions.
+            lead_name: Name of the lead.
+            lead_title: Lead's job title.
+            lead_company: Lead's company.
+            linkedin_url: LinkedIn profile URL.
+            funnel_stage: Current funnel stage.
+            recent_messages: Recent inbound messages.
+
+        Raises:
+            SlackError: If update fails.
+        """
+        try:
+            blocks = build_pitched_card_blocks(
+                lead_name=lead_name,
+                lead_title=lead_title,
+                lead_company=lead_company,
+                linkedin_url=linkedin_url,
+                funnel_stage=funnel_stage,
+                recent_messages=recent_messages,
+            )
+
+            if funnel_stage == FunnelStage.BOOKED:
+                blocks.append({
+                    "type": "context",
+                    "elements": [
+                        {"type": "mrkdwn", "text": "Meeting booked!"}
+                    ],
+                })
+            else:
+                blocks.extend(build_pitched_card_buttons(prospect_id))
+
+            await self._client.chat_update(
+                channel=self._pitched_channel_id,
+                ts=message_ts,
+                text=f"Pitched: {lead_name}",
+                blocks=blocks,
+            )
+
+        except SlackApiError as e:
+            raise SlackError(f"Failed to update pitched card: {e.response['error']}") from e
+        except Exception as e:
+            raise SlackError(f"Failed to update pitched card: {e}") from e
+
+    async def open_pitched_send_message_modal(
+        self,
+        trigger_id: str,
+        prospect_id: uuid.UUID,
+        lead_name: str,
+    ) -> None:
+        """Open a modal for sending a message from the pitched channel.
+
+        Args:
+            trigger_id: Slack trigger ID from the interaction.
+            prospect_id: The prospect to send to.
+            lead_name: Name of the lead (for display).
+
+        Raises:
+            SlackError: If opening modal fails.
+        """
+        try:
+            await self._client.views_open(
+                trigger_id=trigger_id,
+                view={
+                    "type": "modal",
+                    "callback_id": "pitched_send_message_submit",
+                    "title": {"type": "plain_text", "text": "Send Message"},
+                    "submit": {"type": "plain_text", "text": "Send"},
+                    "close": {"type": "plain_text", "text": "Cancel"},
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"*To:* {lead_name}",
+                            },
+                        },
+                        {
+                            "type": "input",
+                            "block_id": "message_input",
+                            "element": {
+                                "type": "plain_text_input",
+                                "action_id": "message_text",
+                                "multiline": True,
+                                "placeholder": {
+                                    "type": "plain_text",
+                                    "text": "Type your message...",
+                                },
+                            },
+                            "label": {"type": "plain_text", "text": "Message"},
+                        },
+                        {
+                            "type": "input",
+                            "block_id": "schedule_input",
+                            "optional": True,
+                            "element": {
+                                "type": "datetimepicker",
+                                "action_id": "schedule_time",
+                            },
+                            "label": {
+                                "type": "plain_text",
+                                "text": "Schedule for later (optional)",
+                            },
+                        },
+                    ],
+                    "private_metadata": str(prospect_id),
+                },
+            )
+        except SlackApiError as e:
+            raise SlackError(f"Failed to open pitched send modal: {e.response['error']}") from e
+        except Exception as e:
+            raise SlackError(f"Failed to open pitched send modal: {e}") from e
 
     async def send_daily_report(
         self,

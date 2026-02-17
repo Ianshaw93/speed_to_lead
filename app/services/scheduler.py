@@ -149,6 +149,88 @@ async def send_weekly_report_task() -> None:
         logger.error(f"Failed to send weekly report: {e}", exc_info=True)
 
 
+async def send_scheduled_pitched_message(
+    prospect_id: uuid.UUID,
+    message_text: str,
+) -> None:
+    """Send a scheduled message from the pitched channel.
+
+    Called by the scheduler at the specified time.
+
+    Args:
+        prospect_id: The prospect to send the message to.
+        message_text: The message content.
+    """
+    import logging
+    from app.database import async_session_factory
+    from app.models import Conversation, MessageDirection, MessageLog, Prospect
+    from app.services.heyreach import get_heyreach_client, HeyReachError
+    from app.services.slack import get_slack_bot
+    from sqlalchemy import select
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        async with async_session_factory() as session:
+            # Load prospect and linked conversation
+            result = await session.execute(
+                select(Prospect).where(Prospect.id == prospect_id)
+            )
+            prospect = result.scalar_one_or_none()
+
+            if not prospect or not prospect.conversation_id:
+                logger.error(f"Prospect {prospect_id} not found or has no conversation")
+                bot = get_slack_bot()
+                await bot.send_confirmation(
+                    f"Scheduled message failed: prospect not found or no conversation linked."
+                )
+                return
+
+            conv_result = await session.execute(
+                select(Conversation).where(Conversation.id == prospect.conversation_id)
+            )
+            conversation = conv_result.scalar_one_or_none()
+
+            if not conversation or not conversation.linkedin_account_id:
+                logger.error(f"Conversation missing or no linkedin_account_id for prospect {prospect_id}")
+                bot = get_slack_bot()
+                await bot.send_confirmation(
+                    f"Scheduled message failed: missing LinkedIn account ID."
+                )
+                return
+
+            # Send via HeyReach
+            heyreach = get_heyreach_client()
+            await heyreach.send_message(
+                conversation_id=conversation.heyreach_lead_id,
+                linkedin_account_id=conversation.linkedin_account_id,
+                message=message_text,
+            )
+
+            # Log outbound message
+            message_log = MessageLog(
+                conversation_id=conversation.id,
+                direction=MessageDirection.OUTBOUND,
+                content=message_text,
+            )
+            session.add(message_log)
+            await session.commit()
+
+            bot = get_slack_bot()
+            await bot.send_confirmation(
+                f"Scheduled message sent to {prospect.full_name or 'prospect'}."
+            )
+
+            logger.info(f"Sent scheduled message to prospect {prospect_id}")
+
+    except HeyReachError as e:
+        logger.error(f"HeyReach error sending scheduled message: {e}")
+        bot = get_slack_bot()
+        await bot.send_confirmation(f"Scheduled message failed: {e}")
+    except Exception as e:
+        logger.error(f"Error sending scheduled message: {e}", exc_info=True)
+
+
 class SchedulerService:
     """Service for managing scheduled tasks."""
 
@@ -261,6 +343,35 @@ class SchedulerService:
         )
 
         self._jobs[draft_id] = job_id
+        return job_id
+
+    def add_scheduled_message(
+        self,
+        prospect_id: uuid.UUID,
+        message_text: str,
+        run_time: datetime,
+    ) -> str:
+        """Schedule a message to be sent to a prospect at a future time.
+
+        Args:
+            prospect_id: The prospect ID to send to.
+            message_text: The message content.
+            run_time: When to send the message.
+
+        Returns:
+            The job ID.
+        """
+        job_id = f"pitched_msg_{prospect_id}_{int(run_time.timestamp())}"
+
+        self._scheduler.add_job(
+            send_scheduled_pitched_message,
+            trigger=DateTrigger(run_date=run_time),
+            args=[prospect_id, message_text],
+            id=job_id,
+            name=f"Scheduled message for prospect {prospect_id}",
+            misfire_grace_time=300,
+        )
+
         return job_id
 
     def cancel_snooze_reminder(self, draft_id: uuid.UUID) -> bool:

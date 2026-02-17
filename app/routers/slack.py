@@ -22,6 +22,7 @@ from app.models import (
     DraftStatus,
     EngagementPost,
     EngagementPostStatus,
+    FunnelStage,
     ICPFeedback,
     MessageDirection,
     MessageLog,
@@ -30,7 +31,6 @@ from app.models import (
 )
 from app.services.deepseek import generate_reply_draft
 from app.services.heyreach import get_heyreach_client, HeyReachError
-from app.models import Conversation
 
 # HeyReach list ID for follow-up sequences
 HEYREACH_FOLLOW_UP_LIST_ID = 511495
@@ -868,9 +868,6 @@ async def _process_funnel_stage(
     stage: str,
 ) -> None:
     """Background task to update prospect funnel stage."""
-    from datetime import datetime, timezone
-    from app.models import FunnelStage
-
     stage_labels = {
         "pitched": "Pitched",
         "calendar_sent": "Calendar Shown",
@@ -920,10 +917,20 @@ async def _process_funnel_stage(
             # Update conversation funnel stage too
             if stage == "pitched":
                 conversation.funnel_stage = FunnelStage.PITCHED
+                new_funnel_stage = FunnelStage.PITCHED
             elif stage == "calendar_sent":
                 conversation.funnel_stage = FunnelStage.CALENDAR_SENT
+                new_funnel_stage = FunnelStage.CALENDAR_SENT
 
             await session.commit()
+
+            # Post or update pitched channel card
+            if prospect and stage in ("pitched", "calendar_sent"):
+                try:
+                    await _post_or_update_pitched_card(session, prospect, new_funnel_stage)
+                    await session.commit()
+                except Exception as card_err:
+                    logger.error(f"Failed to post/update pitched card: {card_err}", exc_info=True)
 
             label = stage_labels.get(stage, stage)
             slack_bot = get_slack_bot()
@@ -1313,6 +1320,332 @@ async def _process_engagement_edit_submit(
         logger.error(f"Error editing engagement {post_id}: {e}", exc_info=True)
 
 
+# =============================================================================
+# Pitched Channel Helpers and Handlers
+# =============================================================================
+
+
+async def _get_recent_inbound_messages(
+    session,
+    prospect: Prospect,
+) -> list[dict[str, str]]:
+    """Get the last 3 inbound messages for a prospect's conversation.
+
+    Args:
+        session: Database session.
+        prospect: The prospect (must have conversation_id).
+
+    Returns:
+        List of dicts with 'content' key, newest first.
+    """
+    if not prospect.conversation_id:
+        return []
+
+    result = await session.execute(
+        select(MessageLog)
+        .where(
+            MessageLog.conversation_id == prospect.conversation_id,
+            MessageLog.direction == MessageDirection.INBOUND,
+        )
+        .order_by(MessageLog.sent_at.desc())
+        .limit(3)
+    )
+    messages = result.scalars().all()
+    return [{"content": m.content} for m in messages]
+
+
+async def _post_or_update_pitched_card(
+    session,
+    prospect: Prospect,
+    funnel_stage: FunnelStage,
+) -> None:
+    """Post a new pitched card or update an existing one.
+
+    Args:
+        session: Database session (caller must commit).
+        prospect: The prospect to create/update card for.
+        funnel_stage: The current funnel stage.
+    """
+    slack_bot = get_slack_bot()
+    recent_messages = await _get_recent_inbound_messages(session, prospect)
+
+    if prospect.pitched_slack_ts:
+        # Update existing card
+        await slack_bot.update_pitched_card(
+            message_ts=prospect.pitched_slack_ts,
+            prospect_id=prospect.id,
+            lead_name=prospect.full_name or "Unknown",
+            lead_title=prospect.job_title,
+            lead_company=prospect.company_name,
+            linkedin_url=prospect.linkedin_url,
+            funnel_stage=funnel_stage,
+            recent_messages=recent_messages,
+        )
+    else:
+        # Post new card
+        ts = await slack_bot.send_pitched_card(
+            prospect_id=prospect.id,
+            lead_name=prospect.full_name or "Unknown",
+            lead_title=prospect.job_title,
+            lead_company=prospect.company_name,
+            linkedin_url=prospect.linkedin_url,
+            funnel_stage=funnel_stage,
+            recent_messages=recent_messages,
+        )
+        prospect.pitched_slack_ts = ts
+
+
+async def handle_pitched_send_message(
+    prospect_id: uuid.UUID,
+    trigger_id: str,
+) -> None:
+    """Handle pitched_send_message action - open modal to compose message.
+
+    Args:
+        prospect_id: The prospect to send to.
+        trigger_id: Slack trigger ID for opening modal.
+    """
+    try:
+        async with async_session_factory() as session:
+            result = await session.execute(
+                select(Prospect).where(Prospect.id == prospect_id)
+            )
+            prospect = result.scalar_one_or_none()
+
+            if not prospect:
+                logger.error(f"Prospect {prospect_id} not found for pitched send message")
+                slack_bot = get_slack_bot()
+                await slack_bot.send_confirmation("Error: Prospect not found.")
+                return
+
+            slack_bot = get_slack_bot()
+            await slack_bot.open_pitched_send_message_modal(
+                trigger_id=trigger_id,
+                prospect_id=prospect_id,
+                lead_name=prospect.full_name or "Unknown",
+            )
+
+    except Exception as e:
+        logger.error(f"Error opening pitched send modal: {e}", exc_info=True)
+        slack_bot = get_slack_bot()
+        await slack_bot.send_confirmation(f"Error opening modal: {e}")
+
+
+async def handle_pitched_calendar_sent(
+    prospect_id: uuid.UUID,
+    message_ts: str,
+    background_tasks: BackgroundTasks,
+) -> None:
+    """Handle pitched_calendar_sent action from pitched channel card."""
+    background_tasks.add_task(
+        _process_pitched_stage_update, prospect_id, message_ts, "calendar_sent"
+    )
+
+
+async def handle_pitched_booked(
+    prospect_id: uuid.UUID,
+    message_ts: str,
+    background_tasks: BackgroundTasks,
+) -> None:
+    """Handle pitched_booked action from pitched channel card."""
+    background_tasks.add_task(
+        _process_pitched_stage_update, prospect_id, message_ts, "booked"
+    )
+
+
+async def _process_pitched_stage_update(
+    prospect_id: uuid.UUID,
+    message_ts: str,
+    stage: str,
+) -> None:
+    """Background task to update prospect stage from pitched channel buttons.
+
+    Args:
+        prospect_id: The prospect to update.
+        message_ts: The pitched card message_ts.
+        stage: 'calendar_sent' or 'booked'.
+    """
+    stage_labels = {
+        "calendar_sent": "Calendar Sent",
+        "booked": "Booked",
+    }
+
+    try:
+        async with async_session_factory() as session:
+            result = await session.execute(
+                select(Prospect).where(Prospect.id == prospect_id)
+            )
+            prospect = result.scalar_one_or_none()
+
+            if not prospect:
+                logger.error(f"Prospect {prospect_id} not found for pitched stage update")
+                slack_bot = get_slack_bot()
+                await slack_bot.send_confirmation("Error: Prospect not found.")
+                return
+
+            now = datetime.now(timezone.utc)
+
+            if stage == "calendar_sent":
+                if not prospect.pitched_at:
+                    prospect.pitched_at = now
+                if not prospect.calendar_sent_at:
+                    prospect.calendar_sent_at = now
+                new_funnel_stage = FunnelStage.CALENDAR_SENT
+            elif stage == "booked":
+                if not prospect.pitched_at:
+                    prospect.pitched_at = now
+                if not prospect.calendar_sent_at:
+                    prospect.calendar_sent_at = now
+                if not prospect.booked_at:
+                    prospect.booked_at = now
+                new_funnel_stage = FunnelStage.BOOKED
+
+            # Update conversation funnel stage if linked
+            if prospect.conversation_id:
+                conv_result = await session.execute(
+                    select(Conversation).where(
+                        Conversation.id == prospect.conversation_id
+                    )
+                )
+                conversation = conv_result.scalar_one_or_none()
+                if conversation:
+                    conversation.funnel_stage = new_funnel_stage
+
+            await session.commit()
+
+            # Update the pitched card
+            await _post_or_update_pitched_card(session, prospect, new_funnel_stage)
+            await session.commit()
+
+            label = stage_labels.get(stage, stage)
+            slack_bot = get_slack_bot()
+            await slack_bot.send_confirmation(
+                f"Marked {prospect.full_name or 'prospect'} as: {label}"
+            )
+
+            logger.info(f"Updated pitched stage to {stage} for prospect {prospect_id}")
+
+    except Exception as e:
+        logger.error(f"Error updating pitched stage for {prospect_id}: {e}", exc_info=True)
+        slack_bot = get_slack_bot()
+        await slack_bot.send_confirmation(f"Error updating stage: {e}")
+
+
+async def handle_pitched_send_message_submit(
+    prospect_id: uuid.UUID,
+    message_text: str,
+    schedule_time: int | None,
+    background_tasks: BackgroundTasks,
+) -> None:
+    """Handle pitched send message modal submission.
+
+    Args:
+        prospect_id: The prospect to send to.
+        message_text: The message content.
+        schedule_time: Optional Unix timestamp for scheduled send.
+        background_tasks: FastAPI background tasks.
+    """
+    if schedule_time:
+        # Schedule for later
+        background_tasks.add_task(
+            _schedule_pitched_message, prospect_id, message_text, schedule_time
+        )
+    else:
+        # Send immediately
+        background_tasks.add_task(
+            _send_pitched_message_now, prospect_id, message_text
+        )
+
+
+async def _schedule_pitched_message(
+    prospect_id: uuid.UUID,
+    message_text: str,
+    schedule_timestamp: int,
+) -> None:
+    """Schedule a message to be sent later via APScheduler."""
+    from app.services.scheduler import get_scheduler_service
+
+    run_time = datetime.fromtimestamp(schedule_timestamp, tz=timezone.utc)
+    scheduler = get_scheduler_service()
+    job_id = scheduler.add_scheduled_message(prospect_id, message_text, run_time)
+
+    slack_bot = get_slack_bot()
+    await slack_bot.send_confirmation(
+        f"Message scheduled for {run_time.strftime('%b %d at %H:%M UTC')}."
+    )
+
+    logger.info(f"Scheduled pitched message for prospect {prospect_id} at {run_time}, job={job_id}")
+
+
+async def _send_pitched_message_now(
+    prospect_id: uuid.UUID,
+    message_text: str,
+) -> None:
+    """Send a message immediately from the pitched channel."""
+    try:
+        async with async_session_factory() as session:
+            result = await session.execute(
+                select(Prospect).where(Prospect.id == prospect_id)
+            )
+            prospect = result.scalar_one_or_none()
+
+            if not prospect or not prospect.conversation_id:
+                logger.error(f"Prospect {prospect_id} not found or no conversation linked")
+                slack_bot = get_slack_bot()
+                await slack_bot.send_confirmation(
+                    "Error: Prospect not found or no conversation linked."
+                )
+                return
+
+            conv_result = await session.execute(
+                select(Conversation).where(
+                    Conversation.id == prospect.conversation_id
+                )
+            )
+            conversation = conv_result.scalar_one_or_none()
+
+            if not conversation or not conversation.linkedin_account_id:
+                logger.error(f"No linkedin_account_id for prospect {prospect_id}")
+                slack_bot = get_slack_bot()
+                await slack_bot.send_confirmation(
+                    "Failed: Missing LinkedIn account ID. Cannot send message."
+                )
+                return
+
+            # Send via HeyReach
+            heyreach = get_heyreach_client()
+            await heyreach.send_message(
+                conversation_id=conversation.heyreach_lead_id,
+                linkedin_account_id=conversation.linkedin_account_id,
+                message=message_text,
+            )
+
+            # Log outbound message
+            message_log = MessageLog(
+                conversation_id=conversation.id,
+                direction=MessageDirection.OUTBOUND,
+                content=message_text,
+            )
+            session.add(message_log)
+            await session.commit()
+
+            slack_bot = get_slack_bot()
+            await slack_bot.send_confirmation(
+                f"Message sent to {prospect.full_name or 'prospect'}."
+            )
+
+            logger.info(f"Sent pitched message to prospect {prospect_id}")
+
+    except HeyReachError as e:
+        logger.error(f"HeyReach error sending pitched message: {e}")
+        slack_bot = get_slack_bot()
+        await slack_bot.send_confirmation(f"Failed to send: {e}")
+    except Exception as e:
+        logger.error(f"Error sending pitched message: {e}", exc_info=True)
+        slack_bot = get_slack_bot()
+        await slack_bot.send_confirmation(f"Error: {e}")
+
+
 @router.post("/interactions")
 async def slack_interactions(
     request: Request,
@@ -1369,6 +1702,22 @@ async def slack_interactions(
                 await handle_engagement_edit(post_id, trigger_id)
             elif action_id == "engagement_skip":
                 await handle_engagement_skip(post_id, message_ts, background_tasks)
+            return {"ok": True}
+
+        # Handle pitched channel actions (use prospect_id)
+        if action_id in ("pitched_send_message", "pitched_calendar_sent", "pitched_booked"):
+            try:
+                prospect_id = uuid.UUID(value_str)
+            except ValueError:
+                logger.error(f"Invalid prospect_id: {value_str}")
+                return {"ok": True}
+
+            if action_id == "pitched_send_message":
+                await handle_pitched_send_message(prospect_id, trigger_id)
+            elif action_id == "pitched_calendar_sent":
+                await handle_pitched_calendar_sent(prospect_id, message_ts, background_tasks)
+            elif action_id == "pitched_booked":
+                await handle_pitched_booked(prospect_id, message_ts, background_tasks)
             return {"ok": True}
 
         # Handle follow-up configuration actions (use conversation_id)
@@ -1482,6 +1831,30 @@ async def slack_interactions(
 
             if edited_comment:
                 await handle_engagement_edit_submit(post_id, edited_comment, background_tasks)
+
+        # Handle pitched send message modal submission
+        elif callback_id == "pitched_send_message_submit":
+            try:
+                prospect_id = uuid.UUID(private_metadata)
+            except ValueError:
+                logger.error(f"Invalid prospect_id in metadata: {private_metadata}")
+                return {"ok": True}
+
+            message_text = (
+                values.get("message_input", {})
+                .get("message_text", {})
+                .get("value", "")
+            )
+            schedule_time = (
+                values.get("schedule_input", {})
+                .get("schedule_time", {})
+                .get("selected_date_time")
+            )
+
+            if message_text:
+                await handle_pitched_send_message_submit(
+                    prospect_id, message_text, schedule_time, background_tasks
+                )
 
         # Handle Not ICP modal submission
         elif callback_id == "not_icp_submit":
