@@ -840,6 +840,107 @@ async def _process_followup_submit(
 
 
 # =============================================================================
+# Funnel Stage Handlers
+# =============================================================================
+
+
+async def handle_funnel_pitched(
+    draft_id: uuid.UUID,
+    message_ts: str,
+    background_tasks: BackgroundTasks,
+) -> None:
+    """Handle funnel_pitched action - mark prospect as pitched."""
+    background_tasks.add_task(_process_funnel_stage, draft_id, message_ts, "pitched")
+
+
+async def handle_funnel_calendar_sent(
+    draft_id: uuid.UUID,
+    message_ts: str,
+    background_tasks: BackgroundTasks,
+) -> None:
+    """Handle funnel_calendar_sent action - mark prospect as calendar sent."""
+    background_tasks.add_task(_process_funnel_stage, draft_id, message_ts, "calendar_sent")
+
+
+async def _process_funnel_stage(
+    draft_id: uuid.UUID,
+    message_ts: str,
+    stage: str,
+) -> None:
+    """Background task to update prospect funnel stage."""
+    from datetime import datetime, timezone
+    from app.models import FunnelStage
+
+    stage_labels = {
+        "pitched": "Pitched",
+        "calendar_sent": "Calendar Shown",
+    }
+
+    try:
+        async with async_session_factory() as session:
+            result = await session.execute(
+                select(Draft)
+                .options(selectinload(Draft.conversation))
+                .where(Draft.id == draft_id)
+            )
+            draft = result.scalar_one_or_none()
+
+            if not draft:
+                logger.error(f"Draft {draft_id} not found for funnel stage update")
+                slack_bot = get_slack_bot()
+                await slack_bot.send_confirmation("Error: Draft not found.")
+                return
+
+            conversation = draft.conversation
+
+            # Find linked prospect
+            normalized_url = conversation.linkedin_profile_url.lower().strip().rstrip("/")
+            if "?" in normalized_url:
+                normalized_url = normalized_url.split("?")[0]
+
+            prospect_result = await session.execute(
+                select(Prospect).where(Prospect.linkedin_url == normalized_url)
+            )
+            prospect = prospect_result.scalar_one_or_none()
+
+            now = datetime.now(timezone.utc)
+
+            if prospect:
+                if stage == "pitched":
+                    if not prospect.pitched_at:
+                        prospect.pitched_at = now
+                elif stage == "calendar_sent":
+                    if not prospect.pitched_at:
+                        prospect.pitched_at = now
+                    if not prospect.calendar_sent_at:
+                        prospect.calendar_sent_at = now
+            else:
+                logger.warning(f"No prospect found for {normalized_url}")
+
+            # Update conversation funnel stage too
+            if stage == "pitched":
+                conversation.funnel_stage = FunnelStage.PITCHED
+            elif stage == "calendar_sent":
+                conversation.funnel_stage = FunnelStage.CALENDAR_SENT
+
+            await session.commit()
+
+            label = stage_labels.get(stage, stage)
+            slack_bot = get_slack_bot()
+            name = prospect.full_name if prospect else conversation.lead_name
+            await slack_bot.send_confirmation(
+                f"Marked {name} as: {label}"
+            )
+
+            logger.info(f"Updated funnel stage to {stage} for draft {draft_id}")
+
+    except Exception as e:
+        logger.error(f"Error updating funnel stage for draft {draft_id}: {e}", exc_info=True)
+        slack_bot = get_slack_bot()
+        await slack_bot.send_confirmation(f"Error updating funnel stage: {e}")
+
+
+# =============================================================================
 # Classification Handlers
 # =============================================================================
 
@@ -1306,6 +1407,11 @@ async def slack_interactions(
         elif action_id.startswith("snooze_"):
             duration = action_id.replace("snooze_", "")
             await handle_snooze(draft_id, message_ts, duration, background_tasks)
+        # Funnel stage actions
+        elif action_id == "funnel_pitched":
+            await handle_funnel_pitched(draft_id, message_ts, background_tasks)
+        elif action_id == "funnel_calendar_sent":
+            await handle_funnel_calendar_sent(draft_id, message_ts, background_tasks)
         # Classification actions
         elif action_id == "classify_positive":
             await handle_classify_positive(draft_id, message_ts, slack_user_id, background_tasks)

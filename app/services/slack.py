@@ -152,6 +152,22 @@ def build_classification_buttons(
             "value": str(draft_id),
         })
 
+    # Funnel stage buttons - always show
+    elements.extend([
+        {
+            "type": "button",
+            "text": {"type": "plain_text", "text": "\U0001f3af Pitched", "emoji": True},
+            "action_id": "funnel_pitched",
+            "value": str(draft_id),
+        },
+        {
+            "type": "button",
+            "text": {"type": "plain_text", "text": "\U0001f4c5 Calendar Shown", "emoji": True},
+            "action_id": "funnel_calendar_sent",
+            "value": str(draft_id),
+        },
+    ])
+
     # Always show Not Interested and Not ICP buttons
     elements.extend([
         {

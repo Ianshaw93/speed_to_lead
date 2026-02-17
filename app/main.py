@@ -1264,6 +1264,44 @@ async def trigger_buying_signal_outreach(
     return {"status": "processing", "message": "Buying signal batch triggered"}
 
 
+@app.get("/admin/conversations/today")
+async def get_today_conversations() -> dict:
+    """Get conversations updated today with prospect funnel data."""
+    from sqlalchemy import func
+
+    async with async_session_factory() as session:
+        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        query = (
+            select(Conversation)
+            .where(Conversation.updated_at >= today_start)
+            .order_by(Conversation.updated_at.desc())
+        )
+        result = await session.execute(query)
+        conversations = result.scalars().all()
+
+        items = []
+        for c in conversations:
+            # Get linked prospect
+            p_result = await session.execute(
+                select(Prospect).where(Prospect.conversation_id == c.id)
+            )
+            p = p_result.scalar_one_or_none()
+
+            items.append({
+                "lead_name": c.lead_name,
+                "linkedin_url": c.linkedin_profile_url,
+                "funnel_stage": c.funnel_stage.value if c.funnel_stage else None,
+                "updated_at": c.updated_at.isoformat(),
+                "prospect_pitched_at": p.pitched_at.isoformat() if p and p.pitched_at else None,
+                "prospect_calendar_sent_at": p.calendar_sent_at.isoformat() if p and p.calendar_sent_at else None,
+                "prospect_booked_at": p.booked_at.isoformat() if p and p.booked_at else None,
+                "prospect_positive_reply_at": p.positive_reply_at.isoformat() if p and p.positive_reply_at else None,
+                "has_prospect": p is not None,
+            })
+
+        return {"total": len(items), "conversations": items}
+
+
 @app.get("/admin/prospects/funnel")
 async def get_funnel_prospects(stage: str = "pitched") -> dict:
     """Get prospects at pitched stage or further in the funnel.
