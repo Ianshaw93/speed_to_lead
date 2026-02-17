@@ -1264,6 +1264,57 @@ async def trigger_buying_signal_outreach(
     return {"status": "processing", "message": "Buying signal batch triggered"}
 
 
+@app.get("/admin/conversation/{lead_name}")
+async def get_conversation_detail(lead_name: str) -> dict:
+    """Get full conversation detail including messages and drafts."""
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(Conversation).where(Conversation.lead_name.ilike(f"%{lead_name}%"))
+        )
+        conversation = result.scalar_one_or_none()
+        if not conversation:
+            return {"error": f"No conversation found for '{lead_name}'"}
+
+        # Get message logs
+        msg_result = await session.execute(
+            select(MessageLog)
+            .where(MessageLog.conversation_id == conversation.id)
+            .order_by(MessageLog.created_at)
+        )
+        messages = msg_result.scalars().all()
+
+        # Get drafts
+        draft_result = await session.execute(
+            select(Draft)
+            .where(Draft.conversation_id == conversation.id)
+            .order_by(Draft.created_at)
+        )
+        drafts = draft_result.scalars().all()
+
+        return {
+            "lead_name": conversation.lead_name,
+            "linkedin_url": conversation.linkedin_profile_url,
+            "funnel_stage": conversation.funnel_stage.value if conversation.funnel_stage else None,
+            "conversation_history": conversation.conversation_history,
+            "messages": [
+                {
+                    "direction": m.direction.value,
+                    "content": m.content,
+                    "created_at": m.created_at.isoformat(),
+                }
+                for m in messages
+            ],
+            "drafts": [
+                {
+                    "status": d.status.value,
+                    "ai_draft": d.ai_draft,
+                    "created_at": d.created_at.isoformat(),
+                }
+                for d in drafts
+            ],
+        }
+
+
 @app.get("/admin/conversations/today")
 async def get_today_conversations() -> dict:
     """Get conversations updated today with prospect funnel data."""
