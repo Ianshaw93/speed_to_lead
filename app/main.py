@@ -1279,7 +1279,7 @@ async def get_conversation_detail(lead_name: str) -> dict:
         msg_result = await session.execute(
             select(MessageLog)
             .where(MessageLog.conversation_id == conversation.id)
-            .order_by(MessageLog.created_at)
+            .order_by(MessageLog.sent_at)
         )
         messages = msg_result.scalars().all()
 
@@ -1300,7 +1300,7 @@ async def get_conversation_detail(lead_name: str) -> dict:
                 {
                     "direction": m.direction.value,
                     "content": m.content,
-                    "created_at": m.created_at.isoformat(),
+                    "sent_at": m.sent_at.isoformat(),
                 }
                 for m in messages
             ],
