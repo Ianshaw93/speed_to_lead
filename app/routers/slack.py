@@ -1914,3 +1914,44 @@ async def test_followup_message(
         "note": "Click 'Configure Follow-ups' button to test the modal. "
                 "Submission will fail gracefully since no real conversation exists.",
     }
+
+
+@router.post("/test-pitched-card")
+async def test_pitched_card(linkedin_url: str) -> dict:
+    """Test endpoint to post a pitched card for a prospect by LinkedIn URL.
+
+    This simulates what happens when you click "Pitched" on a draft.
+
+    Args:
+        linkedin_url: The prospect's LinkedIn URL.
+
+    Returns:
+        Status and card details.
+    """
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(Prospect).where(Prospect.linkedin_url == linkedin_url)
+        )
+        prospect = result.scalar_one_or_none()
+
+        if not prospect:
+            return {"error": f"Prospect not found: {linkedin_url}"}
+
+        funnel_stage = FunnelStage.PITCHED
+        if prospect.booked_at:
+            funnel_stage = FunnelStage.BOOKED
+        elif prospect.calendar_sent_at:
+            funnel_stage = FunnelStage.CALENDAR_SENT
+
+        try:
+            await _post_or_update_pitched_card(session, prospect, funnel_stage)
+            await session.commit()
+        except Exception as e:
+            return {"error": str(e)}
+
+        return {
+            "status": "posted",
+            "prospect": prospect.full_name,
+            "funnel_stage": funnel_stage.value,
+            "pitched_slack_ts": prospect.pitched_slack_ts,
+        }
