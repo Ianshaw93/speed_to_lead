@@ -20,6 +20,24 @@ This is part of a 3-project prospecting/outreach system:
 - Tests in `tests/` (mirrors source structure)
 - Alembic migrations in `alembic/versions/`
 
+## Sales Funnel Stages
+
+The funnel progresses linearly:
+
+```
+Connection Req Sent → Connection Accepted → Initial Msg Sent → Positive Reply → Pitched → Calendar Shown → Booked
+```
+
+- **Connection Req Sent** (`connection_sent_at`) - Outreach initiated via HeyReach
+- **Connection Accepted** (`connection_accepted_at`) - Prospect accepted connection
+- **Initial Msg Sent** - First message delivered (tracked in HeyReach)
+- **Positive Reply** (`positive_reply_at` / `FunnelStage.POSITIVE_REPLY`) - Lead replied positively
+- **Pitched** (`pitched_at` / `FunnelStage.PITCHED`) - We invited them to schedule a call
+- **Calendar Shown** (`calendar_sent_at` / `FunnelStage.CALENDAR_SENT`) - They agreed, we sent calendar link
+- **Booked** (`booked_at` / `FunnelStage.BOOKED`) - They booked into calendar
+
+Tracked on both `Prospect` model (timestamp fields) and `Conversation` model (`funnel_stage` enum).
+
 ## Database
 
 **IMPORTANT**: This project uses the Railway-hosted PostgreSQL database, not a local database.

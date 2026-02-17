@@ -1264,6 +1264,60 @@ async def trigger_buying_signal_outreach(
     return {"status": "processing", "message": "Buying signal batch triggered"}
 
 
+@app.get("/admin/prospects/funnel")
+async def get_funnel_prospects(stage: str = "pitched") -> dict:
+    """Get prospects at pitched stage or further in the funnel.
+
+    Returns prospects where pitched_at, calendar_sent_at, or booked_at is set,
+    along with their conversation funnel_stage.
+    """
+    from sqlalchemy import or_
+
+    async with async_session_factory() as session:
+        query = (
+            select(Prospect)
+            .outerjoin(Conversation, Prospect.conversation_id == Conversation.id)
+            .where(
+                or_(
+                    Prospect.pitched_at.isnot(None),
+                    Prospect.calendar_sent_at.isnot(None),
+                    Prospect.booked_at.isnot(None),
+                )
+            )
+            .order_by(Prospect.updated_at.desc())
+        )
+        result = await session.execute(query)
+        prospects = result.scalars().all()
+
+        # Also get conversation funnel stages
+        conv_ids = [p.conversation_id for p in prospects if p.conversation_id]
+        conv_stages = {}
+        if conv_ids:
+            conv_query = select(Conversation).where(Conversation.id.in_(conv_ids))
+            conv_result = await session.execute(conv_query)
+            for conv in conv_result.scalars().all():
+                conv_stages[str(conv.id)] = conv.funnel_stage.value if conv.funnel_stage else None
+
+        return {
+            "total": len(prospects),
+            "prospects": [
+                {
+                    "name": p.full_name,
+                    "job_title": p.job_title,
+                    "company": p.company_name,
+                    "linkedin_url": p.linkedin_url,
+                    "source": p.source_type.value if p.source_type else None,
+                    "funnel_stage": conv_stages.get(str(p.conversation_id)) if p.conversation_id else None,
+                    "positive_reply_at": p.positive_reply_at.isoformat() if p.positive_reply_at else None,
+                    "pitched_at": p.pitched_at.isoformat() if p.pitched_at else None,
+                    "calendar_sent_at": p.calendar_sent_at.isoformat() if p.calendar_sent_at else None,
+                    "booked_at": p.booked_at.isoformat() if p.booked_at else None,
+                }
+                for p in prospects
+            ],
+        }
+
+
 @app.get("/buying-signal/log")
 async def view_buying_signal_log(limit: int = 20) -> dict:
     """View recent buying signal payloads for format inspection."""
