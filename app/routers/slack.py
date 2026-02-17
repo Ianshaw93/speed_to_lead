@@ -1917,13 +1917,14 @@ async def test_followup_message(
 
 
 @router.post("/test-pitched-card")
-async def test_pitched_card(linkedin_url: str) -> dict:
+async def test_pitched_card(linkedin_url: str, set_pitched: bool = False) -> dict:
     """Test endpoint to post a pitched card for a prospect by LinkedIn URL.
 
     This simulates what happens when you click "Pitched" on a draft.
 
     Args:
         linkedin_url: The prospect's LinkedIn URL.
+        set_pitched: If True, also sets pitched_at and conversation funnel_stage.
 
     Returns:
         Status and card details.
@@ -1942,6 +1943,19 @@ async def test_pitched_card(linkedin_url: str) -> dict:
             funnel_stage = FunnelStage.BOOKED
         elif prospect.calendar_sent_at:
             funnel_stage = FunnelStage.CALENDAR_SENT
+
+        if set_pitched and not prospect.pitched_at:
+            prospect.pitched_at = datetime.now(timezone.utc)
+            # Also update conversation funnel_stage
+            if prospect.conversation_id:
+                conv_result = await session.execute(
+                    select(Conversation).where(
+                        Conversation.id == prospect.conversation_id
+                    )
+                )
+                conv = conv_result.scalar_one_or_none()
+                if conv and funnel_stage == FunnelStage.PITCHED:
+                    conv.funnel_stage = FunnelStage.PITCHED
 
         try:
             await _post_or_update_pitched_card(session, prospect, funnel_stage)
