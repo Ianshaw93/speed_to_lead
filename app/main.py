@@ -823,6 +823,23 @@ async def register_prospects(request: Request) -> dict:
                     if heyreach_list_id:
                         from datetime import datetime, timezone
                         existing.heyreach_uploaded_at = datetime.now(timezone.utc)
+                    # Backfill names and profile fields if previously missing
+                    if not existing.full_name:
+                        existing.full_name = p.get("fullName") or p.get("full_name")
+                    if not existing.first_name:
+                        existing.first_name = p.get("firstName") or p.get("first_name")
+                    if not existing.last_name:
+                        existing.last_name = p.get("lastName") or p.get("last_name")
+                    if not existing.job_title:
+                        existing.job_title = p.get("jobTitle") or p.get("job_title") or p.get("position")
+                    if not existing.company_name:
+                        existing.company_name = p.get("companyName") or p.get("company_name") or p.get("company")
+                    if not existing.headline:
+                        existing.headline = p.get("headline")
+                    if not existing.location:
+                        existing.location = p.get("addressWithCountry") or p.get("location")
+                    if not existing.email:
+                        existing.email = p.get("email") or p.get("emailAddress")
                     updated += 1
                 else:
                     # Create new prospect
@@ -1190,36 +1207,61 @@ async def receive_buying_signal(request: Request) -> dict:
         logger.warning("Buying signal payload is not a dict, skipping DB insert")
         return {"status": "received", "received_at": received_at, "persisted": False}
 
-    # Build linkedin_url from vanity identifier
-    li_identifier = data.get("linkedinIdentifier", "")
+    # Build linkedin_url from vanity identifier (support both camelCase and snake_case)
+    li_identifier = data.get("linkedinIdentifier") or data.get("linkedin_identifier") or ""
     if not li_identifier:
-        logger.warning("No linkedinIdentifier in buying signal, skipping DB insert")
-        return {"status": "received", "received_at": received_at, "persisted": False}
+        # Also accept a full linkedin_url directly
+        li_url = data.get("linkedin_url") or data.get("linkedinUrl") or ""
+        if li_url:
+            linkedin_url = normalize_linkedin_url(li_url)
+        else:
+            logger.warning("No linkedinIdentifier in buying signal, skipping DB insert")
+            return {"status": "received", "received_at": received_at, "persisted": False}
+    else:
+        linkedin_url = normalize_linkedin_url(f"https://linkedin.com/in/{li_identifier}")
 
-    linkedin_url = normalize_linkedin_url(f"https://linkedin.com/in/{li_identifier}")
+    # Resolve names with camelCase/snake_case fallbacks
+    first_name = data.get("firstName") or data.get("first_name")
+    last_name = data.get("lastName") or data.get("last_name")
+    full_name = data.get("fullName") or data.get("full_name")
+    if not full_name and first_name:
+        full_name = f"{first_name} {last_name}".strip() if last_name else first_name
 
     async with async_session_factory() as session:
-        # Skip if already exists
-        existing = await session.execute(
+        # Check if prospect already exists
+        existing_result = await session.execute(
             select(Prospect).where(Prospect.linkedin_url == linkedin_url)
         )
-        if existing.scalar_one_or_none():
-            logger.info(f"Buying signal duplicate skipped: {linkedin_url}")
+        existing = existing_result.scalar_one_or_none()
+        if existing:
+            # Backfill names if they were previously missing
+            if not existing.full_name and full_name:
+                existing.full_name = full_name
+            if not existing.first_name and first_name:
+                existing.first_name = first_name
+            if not existing.last_name and last_name:
+                existing.last_name = last_name
+            if not existing.job_title:
+                existing.job_title = data.get("jobTitle") or data.get("job_title")
+            if not existing.headline:
+                existing.headline = data.get("profileBaseline") or data.get("profile_headline")
+            await session.commit()
+            logger.info(f"Buying signal duplicate updated: {linkedin_url}")
             return {"status": "duplicate", "received_at": received_at, "linkedin_url": linkedin_url}
 
         prospect = Prospect(
             linkedin_url=linkedin_url,
-            full_name=data.get("fullName"),
-            first_name=data.get("firstName"),
-            last_name=data.get("lastName"),
-            job_title=data.get("jobTitle"),
-            company_name=data.get("company"),
-            company_industry=data.get("industry"),
+            full_name=full_name,
+            first_name=first_name,
+            last_name=last_name,
+            job_title=data.get("jobTitle") or data.get("job_title"),
+            company_name=data.get("company") or data.get("company_name"),
+            company_industry=data.get("industry") or data.get("company_industry"),
             location=data.get("location"),
-            headline=data.get("profileBaseline"),
-            email=data.get("email"),
+            headline=data.get("profileBaseline") or data.get("profile_headline"),
+            email=data.get("email") or data.get("emailAddress"),
             source_type=ProspectSource.BUYING_SIGNAL,
-            source_keyword=data.get("intent_keyword"),
+            source_keyword=data.get("intent_keyword") or data.get("source_keyword"),
             icp_match=True,
             icp_reason=data.get("score_reasoning"),
         )
