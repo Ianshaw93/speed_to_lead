@@ -41,7 +41,50 @@
       "WebFetch(domain:www.anthropic.com)",
       "Bash(pytest:*)",
       "Bash(cmd.exe /c \"railway logs --build --lines 50 f0980c37-9b1f-4191-b5be-f18eb6271451\")",
-      "Bash(chmod:*)"
+      "Bash(chmod:*)",
+      "Bash(cmd.exe /c \"railway run alembic upgrade head\")",
+      "Bash(cmd.exe /c \"railway variables\")",
+      "Bash(cmd.exe /c \"railway variables --json\")",
+      "Bash(cmd.exe /c \"railway variables --kv\")",
+      "Bash(cmd.exe /c \"railway logs --build --lines 50 ef27d4e5-4a3b-4cf0-bea4-62fa2dc136a6\")",
+      "Bash(cmd.exe /c \"echo alembic upgrade head | railway shell\")",
+      "mcp__Railway__list-variables",
+      "mcp__Railway__get-logs",
+      "Bash(cmd.exe /c \"railway logs --lines 200 --since 30m\")",
+      "Bash(cmd.exe /c \"railway logs --lines 200 --since 1h\")",
+      "Bash(cmd.exe /c \"railway logs --lines 300 --since 3h\")",
+      "Bash(cmd.exe /c \"railway logs --lines 500\")",
+      "WebFetch(domain:documenter.getpostman.com)",
+      "Bash(cmd.exe /c \"railway logs --build --lines 50 71451f9e-08ea-4786-9c65-480edb5bcbbc\")",
+      "Bash(find:*)",
+      "mcp__Railway__list-deployments",
+      "Bash(xargs:*)",
+      "Bash(cmd.exe /c \"railway run alembic current\")",
+      "Bash(ls:*)",
+      "Bash(xxd:*)",
+      "Bash(cmd.exe /c \"railway logs --lines 200 --since 2h\")",
+      "Bash(cmd.exe /c \"railway logs --lines 100 --since 30m\")",
+      "Bash(cmd.exe /c \"railway run -- python query_draft.py\")",
+      "Bash(cmd.exe /c \"railway logs --build --lines 50 6ecdcf96-afac-4920-93f4-28aac7a27cc5\")",
+      "WebFetch(domain:status.railway.com)",
+      "Bash(cmd.exe /c \"railway redeploy --yes\")",
+      "Bash(cmd.exe /c \"railway logs --build --lines 30 dfb917da-853f-45a4-a5a0-5a405ff2c52f\")",
+      "Bash(cmd.exe /c \"railway logs --lines 50 dfb917da-853f-45a4-a5a0-5a405ff2c52f\")",
+      "Bash(cmd.exe /c \"railway logs --lines 50 f604b761-00de-4cb4-98f3-17380986d16a\")",
+      "Bash(cmd.exe /c \"railway logs --lines 20 --since 5m\")",
+      "WebFetch(domain:taplio.com)",
+      "WebFetch(domain:marketingexpertshub.com)",
+      "WebFetch(domain:nanobits.beehiiv.com)",
+      "WebFetch(domain:www.supergrow.ai)",
+      "WebFetch(domain:www.youreverydayai.com)",
+      "WebFetch(domain:autogpt.net)",
+      "WebFetch(domain:creati.ai)",
+      "Bash(cmd.exe /c \"railway logs --build --lines 30 02991fb5-946b-4097-8ddb-0814b84f92c8\")",
+      "Bash(cmd.exe:*)",
+      "WebFetch(domain:apify.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(PGPASSWORD=\"FxvzWGNDpTtzlFccSOQKATscwIXJirFA\" psql:*)",
+      "Bash(where:*)"
     ]
   },
   "hooks": {
@@ -57,5 +100,6 @@
         ]
       }
     ]
-  }
+  },
+  "autoUpdatesChannel": "latest"
 }

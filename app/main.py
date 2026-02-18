@@ -24,7 +24,7 @@ try:
     from app.database import async_session_factory
     logger.info("Database session factory created")
 
-    from app.models import Conversation, Draft, DraftStatus, FunnelStage, MessageDirection, MessageLog, Prospect, ProspectSource
+    from app.models import Conversation, Draft, DraftStatus, FunnelStage, MessageDirection, MessageLog, PipelineRun, Prospect, ProspectSource
     logger.info("Models imported")
 
     from app.schemas import HeyReachWebhookPayload, HealthResponse
@@ -283,6 +283,12 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
 
                 if prospect and not prospect.conversation_id:
                     prospect.conversation_id = conversation.id
+                    # Backfill name from conversation if prospect has no name
+                    if payload.lead_name and not prospect.full_name:
+                        parts = payload.lead_name.strip().split(" ", 1)
+                        prospect.full_name = payload.lead_name
+                        prospect.first_name = parts[0]
+                        prospect.last_name = parts[1] if len(parts) > 1 else None
                     logger.info(f"Linked prospect {prospect.id} to conversation {conversation.id}")
 
             await session.commit()
@@ -823,6 +829,15 @@ async def register_prospects(request: Request) -> dict:
                     if heyreach_list_id:
                         from datetime import datetime, timezone
                         existing.heyreach_uploaded_at = datetime.now(timezone.utc)
+                    # Backfill activity fields if currently null
+                    if p.get("connection_count") is not None and existing.connection_count is None:
+                        existing.connection_count = p["connection_count"]
+                    if p.get("follower_count") is not None and existing.follower_count is None:
+                        existing.follower_count = p["follower_count"]
+                    if p.get("is_creator") is not None and existing.is_creator is None:
+                        existing.is_creator = p["is_creator"]
+                    if p.get("activity_score") is not None and existing.activity_score is None:
+                        existing.activity_score = p["activity_score"]
                     updated += 1
                 else:
                     # Create new prospect
@@ -863,6 +878,10 @@ async def register_prospects(request: Request) -> dict:
                         icp_reason=p.get("icp_reason"),
                         heyreach_list_id=heyreach_list_id,
                         heyreach_uploaded_at=datetime.now(timezone.utc) if heyreach_list_id else None,
+                        connection_count=p.get("connection_count"),
+                        follower_count=p.get("follower_count"),
+                        is_creator=p.get("is_creator"),
+                        activity_score=p.get("activity_score"),
                     )
                     session.add(prospect)
                     created += 1
@@ -941,6 +960,10 @@ async def backfill_prospects(request: Request) -> dict:
                     icp_reason=p.get("icp_reason"),
                     heyreach_list_id=p.get("heyreach_list_id"),
                     heyreach_uploaded_at=datetime.now(timezone.utc) if p.get("heyreach_list_id") else None,
+                    connection_count=p.get("connection_count"),
+                    follower_count=p.get("follower_count"),
+                    is_creator=p.get("is_creator"),
+                    activity_score=p.get("activity_score"),
                 )
                 session.add(prospect)
                 created += 1
@@ -1095,6 +1118,67 @@ async def lookup_prospect(
         return {
             "matches": matches,
             "count": len(matches),
+        }
+
+
+@app.get("/api/prospects/by-icp")
+async def prospects_by_icp(keywords: str, limit: int = 15) -> dict:
+    """Search prospect pool by ICP keywords in job_title and headline.
+
+    Args:
+        keywords: Comma-separated list of search terms.
+        limit: Max results (default 15).
+
+    Returns:
+        Dict with pool_size, matches count, and prospects list.
+    """
+    from sqlalchemy import or_, func
+
+    terms = [t.strip() for t in keywords.split(",") if t.strip()]
+    if not terms:
+        raise HTTPException(status_code=400, detail="No keywords provided")
+
+    async with async_session_factory() as session:
+        # Pool size: total prospects with activity_score
+        pool_result = await session.execute(
+            select(func.count(Prospect.id)).where(
+                Prospect.activity_score.isnot(None)
+            )
+        )
+        pool_size = pool_result.scalar() or 0
+
+        # Build OR conditions across job_title and headline
+        conditions = []
+        for term in terms:
+            conditions.append(Prospect.job_title.ilike(f"%{term}%"))
+            conditions.append(Prospect.headline.ilike(f"%{term}%"))
+
+        result = await session.execute(
+            select(Prospect)
+            .where(
+                or_(*conditions),
+                Prospect.activity_score.isnot(None),
+            )
+            .order_by(Prospect.activity_score.desc().nullslast())
+            .limit(limit)
+        )
+        prospects = result.scalars().all()
+
+        return {
+            "pool_size": pool_size,
+            "matches": len(prospects),
+            "prospects": [
+                {
+                    "linkedin_url": p.linkedin_url,
+                    "full_name": p.full_name,
+                    "job_title": p.job_title,
+                    "company_name": p.company_name,
+                    "location": p.location,
+                    "headline": p.headline,
+                    "activity_score": float(p.activity_score) if p.activity_score else None,
+                }
+                for p in prospects
+            ],
         }
 
 
@@ -1262,6 +1346,134 @@ async def trigger_buying_signal_outreach(
 
     background_tasks.add_task(_run)
     return {"status": "processing", "message": "Buying signal batch triggered"}
+
+
+# =============================================================================
+# PIPELINE RUNS TRACKING
+# =============================================================================
+
+
+@app.post("/api/pipeline-runs")
+async def create_pipeline_run(request: Request) -> dict:
+    """Record a pipeline run with metrics and costs.
+
+    Called by multichannel-outreach after a pipeline completes (or fails).
+    """
+    data = await request.json()
+
+    run_type = data.get("run_type")
+    if not run_type:
+        raise HTTPException(status_code=400, detail="run_type is required")
+
+    async with async_session_factory() as session:
+        from decimal import Decimal
+
+        run = PipelineRun(
+            run_type=run_type,
+            prospect_url=data.get("prospect_url"),
+            prospect_name=data.get("prospect_name"),
+            icp_description=data.get("icp_description"),
+            status=data.get("status", "completed"),
+            # Pipeline metrics
+            queries_generated=data.get("queries_generated", 0),
+            posts_found=data.get("posts_found", 0),
+            engagers_found=data.get("engagers_found", 0),
+            profiles_scraped=data.get("profiles_scraped", 0),
+            location_filtered=data.get("location_filtered", 0),
+            icp_qualified=data.get("icp_qualified", 0),
+            final_leads=data.get("final_leads", 0),
+            # Cost breakdown
+            cost_apify_google=Decimal(str(data.get("cost_apify_google", 0))),
+            cost_apify_reactions=Decimal(str(data.get("cost_apify_reactions", 0))),
+            cost_apify_profiles=Decimal(str(data.get("cost_apify_profiles", 0))),
+            cost_deepseek_icp=Decimal(str(data.get("cost_deepseek_icp", 0))),
+            cost_deepseek_personalize=Decimal(str(data.get("cost_deepseek_personalize", 0))),
+            cost_total=Decimal(str(data.get("cost_total", 0))),
+            # API call counts
+            count_google_searches=data.get("count_google_searches", 0),
+            count_posts_scraped=data.get("count_posts_scraped", 0),
+            count_profiles_scraped=data.get("count_profiles_scraped", 0),
+            count_icp_checks=data.get("count_icp_checks", 0),
+            count_personalizations=data.get("count_personalizations", 0),
+            # Timing
+            duration_seconds=data.get("duration_seconds"),
+            error_message=data.get("error_message"),
+        )
+
+        if data.get("status") in ("completed", "failed"):
+            run.completed_at = datetime.now(timezone.utc)
+
+        session.add(run)
+        await session.commit()
+
+        logger.info(f"Pipeline run recorded: {run.id} ({run_type}, {run.status})")
+        return {"id": str(run.id), "status": "created"}
+
+
+@app.get("/api/pipeline-runs")
+async def list_pipeline_runs(
+    run_type: str | None = None,
+    limit: int = 20,
+    days: int | None = None,
+) -> dict:
+    """List pipeline runs with optional filters.
+
+    Query params:
+        run_type: Filter by type (gift_leads, competitor_post, buying_signal)
+        limit: Max results (default 20)
+        days: Only runs from last N days
+    """
+    from sqlalchemy import func
+    from decimal import Decimal
+
+    async with async_session_factory() as session:
+        query = select(PipelineRun).order_by(PipelineRun.created_at.desc())
+
+        if run_type:
+            query = query.where(PipelineRun.run_type == run_type)
+        if days:
+            cutoff = datetime.now(timezone.utc) - __import__('datetime').timedelta(days=days)
+            query = query.where(PipelineRun.created_at >= cutoff)
+
+        query = query.limit(limit)
+        result = await session.execute(query)
+        runs = result.scalars().all()
+
+        # Compute totals
+        totals_query = select(
+            func.count(PipelineRun.id).label("runs"),
+            func.sum(PipelineRun.cost_total).label("cost"),
+            func.sum(PipelineRun.final_leads).label("leads"),
+        )
+        if run_type:
+            totals_query = totals_query.where(PipelineRun.run_type == run_type)
+        if days:
+            totals_query = totals_query.where(PipelineRun.created_at >= cutoff)
+
+        totals_result = await session.execute(totals_query)
+        totals_row = totals_result.one()
+
+        return {
+            "runs": [
+                {
+                    "id": str(r.id),
+                    "run_type": r.run_type,
+                    "prospect_name": r.prospect_name,
+                    "status": r.status,
+                    "final_leads": r.final_leads,
+                    "cost_total": float(r.cost_total) if r.cost_total else 0,
+                    "duration_seconds": r.duration_seconds,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                    "error_message": r.error_message,
+                }
+                for r in runs
+            ],
+            "totals": {
+                "runs": totals_row.runs or 0,
+                "cost": float(totals_row.cost or Decimal("0")),
+                "leads": totals_row.leads or 0,
+            },
+        }
 
 
 @app.get("/admin/conversation/{lead_name}")

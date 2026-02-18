@@ -184,6 +184,14 @@ def build_classification_buttons(
         },
     ])
 
+    # Gift Leads button (always show)
+    elements.append({
+        "type": "button",
+        "text": {"type": "plain_text", "text": "\U0001f381 Gift Leads", "emoji": True},
+        "action_id": "gift_leads",
+        "value": str(draft_id),
+    })
+
     return [
         {
             "type": "actions",
@@ -1188,6 +1196,173 @@ class SlackBot:
             raise SlackError(f"Failed to open Not ICP modal: {e.response['error']}") from e
         except Exception as e:
             raise SlackError(f"Failed to open Not ICP modal: {e}") from e
+
+    async def open_gift_leads_modal(
+        self,
+        trigger_id: str,
+        prospect_id: uuid.UUID,
+        prospect_name: str,
+        prefill_icp: str = "",
+    ) -> None:
+        """Open a modal for Gift Leads with ICP text input.
+
+        Args:
+            trigger_id: Slack trigger ID from the interaction.
+            prospect_id: The prospect to find leads for.
+            prospect_name: Name for display.
+            prefill_icp: Pre-filled ICP description.
+
+        Raises:
+            SlackError: If opening modal fails.
+        """
+        try:
+            await self._client.views_open(
+                trigger_id=trigger_id,
+                view={
+                    "type": "modal",
+                    "callback_id": "gift_leads_submit",
+                    "title": {"type": "plain_text", "text": "Gift Leads"},
+                    "submit": {"type": "plain_text", "text": "Find Leads"},
+                    "close": {"type": "plain_text", "text": "Cancel"},
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"*Find leads for:* {prospect_name}\n\nDescribe their ICP and we'll search the prospect pool.",
+                            },
+                        },
+                        {
+                            "type": "input",
+                            "block_id": "icp_input",
+                            "element": {
+                                "type": "plain_text_input",
+                                "action_id": "icp_text",
+                                "multiline": True,
+                                "initial_value": prefill_icp,
+                                "placeholder": {
+                                    "type": "plain_text",
+                                    "text": "e.g., naturopath clinic owners, wellness practitioners",
+                                },
+                            },
+                            "label": {"type": "plain_text", "text": "ICP Description"},
+                        },
+                        {
+                            "type": "input",
+                            "block_id": "keywords_input",
+                            "element": {
+                                "type": "plain_text_input",
+                                "action_id": "keywords_text",
+                                "placeholder": {
+                                    "type": "plain_text",
+                                    "text": "e.g., naturopath, ND, clinic owner, wellness",
+                                },
+                            },
+                            "label": {"type": "plain_text", "text": "Search Keywords (comma-separated)"},
+                        },
+                    ],
+                    "private_metadata": str(prospect_id),
+                },
+            )
+        except SlackApiError as e:
+            raise SlackError(f"Failed to open gift leads modal: {e.response['error']}") from e
+        except Exception as e:
+            raise SlackError(f"Failed to open gift leads modal: {e}") from e
+
+    async def send_gift_leads_results(
+        self,
+        prospect_name: str,
+        leads: list[dict],
+        pool_size: int,
+        keywords: list[str],
+    ) -> str:
+        """Post gift leads results to Slack with formatted table and CSV.
+
+        Args:
+            prospect_name: Name of the prospect we're gifting leads to.
+            leads: List of lead dicts.
+            pool_size: Total prospects in the DB pool.
+            keywords: Keywords that were searched.
+
+        Returns:
+            The Slack message timestamp.
+
+        Raises:
+            SlackError: If sending fails.
+        """
+        try:
+            rows = []
+            for i, lead in enumerate(leads, 1):
+                name = lead.get("full_name") or "Unknown"
+                title = lead.get("job_title") or ""
+                company = lead.get("company_name") or ""
+                score = lead.get("activity_score") or 0
+                url = lead.get("linkedin_url") or ""
+                rows.append(f"{i}. *{name}* - {title} @ {company} (score: {score}) <{url}|LI>")
+
+            table_text = "\n".join(rows) if rows else "No leads found."
+
+            blocks = [
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": f"Gift Leads for {prospect_name}",
+                        "emoji": True,
+                    },
+                },
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": f"Keywords: {', '.join(keywords)} | {len(leads)} leads from {pool_size} prospects in DB",
+                        }
+                    ],
+                },
+                {"type": "divider"},
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": table_text[:3000],
+                    },
+                },
+            ]
+
+            response = await self._client.chat_postMessage(
+                channel=self._channel_id,
+                blocks=blocks,
+                text=f"Gift Leads for {prospect_name}: {len(leads)} matches",
+            )
+
+            if leads:
+                import csv
+                import io
+
+                output = io.StringIO()
+                writer = csv.DictWriter(
+                    output,
+                    fieldnames=["full_name", "job_title", "company_name", "location", "activity_score", "linkedin_url"],
+                    extrasaction="ignore",
+                )
+                writer.writeheader()
+                writer.writerows(leads)
+
+                await self._client.files_upload_v2(
+                    channel=self._channel_id,
+                    content=output.getvalue(),
+                    filename=f"gift_leads_{prospect_name.replace(' ', '_')}.csv",
+                    title=f"Gift Leads CSV - {prospect_name}",
+                    thread_ts=response["ts"],
+                )
+
+            return response["ts"]
+
+        except SlackApiError as e:
+            raise SlackError(f"Failed to send gift leads results: {e.response['error']}") from e
+        except Exception as e:
+            raise SlackError(f"Failed to send gift leads results: {e}") from e
 
     async def send_pitched_card(
         self,

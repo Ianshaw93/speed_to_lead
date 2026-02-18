@@ -239,6 +239,12 @@ class Prospect(Base):
     headline: Mapped[str | None] = mapped_column(Text, nullable=True)
     email: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
 
+    # Activity scoring (for gift leads / prospect pool reuse)
+    connection_count: Mapped[int | None] = mapped_column(nullable=True)
+    follower_count: Mapped[int | None] = mapped_column(nullable=True)
+    is_creator: Mapped[bool | None] = mapped_column(nullable=True)
+    activity_score: Mapped[float | None] = mapped_column(Numeric(8, 2), nullable=True)
+
     # Source tracking
     source_type: Mapped[ProspectSource] = mapped_column(
         Enum(
@@ -409,6 +415,60 @@ class DailyMetrics(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class PipelineRun(Base):
+    """Record of a pipeline execution with metrics and costs."""
+
+    __tablename__ = "pipeline_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    run_type: Mapped[str] = mapped_column(String(50), index=True)  # gift_leads, competitor_post, buying_signal
+    prospect_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    prospect_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    icp_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="started")  # started, completed, failed
+
+    # Pipeline metrics
+    queries_generated: Mapped[int] = mapped_column(default=0)
+    posts_found: Mapped[int] = mapped_column(default=0)
+    engagers_found: Mapped[int] = mapped_column(default=0)
+    profiles_scraped: Mapped[int] = mapped_column(default=0)
+    location_filtered: Mapped[int] = mapped_column(default=0)
+    icp_qualified: Mapped[int] = mapped_column(default=0)
+    final_leads: Mapped[int] = mapped_column(default=0)
+
+    # Cost breakdown
+    cost_apify_google: Mapped[Decimal] = mapped_column(Numeric(10, 4), default=Decimal("0"))
+    cost_apify_reactions: Mapped[Decimal] = mapped_column(Numeric(10, 4), default=Decimal("0"))
+    cost_apify_profiles: Mapped[Decimal] = mapped_column(Numeric(10, 4), default=Decimal("0"))
+    cost_deepseek_icp: Mapped[Decimal] = mapped_column(Numeric(10, 4), default=Decimal("0"))
+    cost_deepseek_personalize: Mapped[Decimal] = mapped_column(Numeric(10, 4), default=Decimal("0"))
+    cost_total: Mapped[Decimal] = mapped_column(Numeric(10, 4), default=Decimal("0"))
+
+    # API call counts
+    count_google_searches: Mapped[int] = mapped_column(default=0)
+    count_posts_scraped: Mapped[int] = mapped_column(default=0)
+    count_profiles_scraped: Mapped[int] = mapped_column(default=0)
+    count_icp_checks: Mapped[int] = mapped_column(default=0)
+    count_personalizations: Mapped[int] = mapped_column(default=0)
+
+    # Timing
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_seconds: Mapped[int | None] = mapped_column(nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

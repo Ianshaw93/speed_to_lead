@@ -1321,6 +1321,135 @@ async def _process_engagement_edit_submit(
 
 
 # =============================================================================
+# Gift Leads Handlers
+# =============================================================================
+
+
+async def handle_gift_leads(
+    draft_id: uuid.UUID,
+    trigger_id: str,
+) -> None:
+    """Handle gift_leads button click - open modal with ICP input."""
+    try:
+        async with async_session_factory() as session:
+            result = await session.execute(
+                select(Draft)
+                .options(selectinload(Draft.conversation))
+                .where(Draft.id == draft_id)
+            )
+            draft = result.scalar_one_or_none()
+
+            if not draft:
+                logger.error(f"Draft {draft_id} not found for gift leads")
+                slack_bot = get_slack_bot()
+                await slack_bot.send_confirmation("Error: Draft not found.")
+                return
+
+            conversation = draft.conversation
+            normalized_url = conversation.linkedin_profile_url.lower().strip().rstrip("/")
+            if "?" in normalized_url:
+                normalized_url = normalized_url.split("?")[0]
+
+            prospect_result = await session.execute(
+                select(Prospect).where(Prospect.linkedin_url == normalized_url)
+            )
+            prospect = prospect_result.scalar_one_or_none()
+
+            prospect_name = conversation.lead_name
+            prospect_id = prospect.id if prospect else uuid.uuid4()
+            prefill_icp = prospect.icp_reason or "" if prospect else ""
+
+            slack_bot = get_slack_bot()
+            await slack_bot.open_gift_leads_modal(
+                trigger_id=trigger_id,
+                prospect_id=prospect_id,
+                prospect_name=prospect_name,
+                prefill_icp=prefill_icp,
+            )
+
+    except Exception as e:
+        logger.error(f"Error opening gift leads modal: {e}", exc_info=True)
+        slack_bot = get_slack_bot()
+        await slack_bot.send_confirmation(f"Error opening gift leads: {e}")
+
+
+async def _process_gift_leads(
+    prospect_id: uuid.UUID,
+    keywords: list[str],
+    prospect_name: str,
+) -> None:
+    """Background task to search DB and post gift leads results."""
+    try:
+        async with async_session_factory() as session:
+            from sqlalchemy import or_, func
+
+            conditions = []
+            for kw in keywords:
+                kw = kw.strip()
+                if not kw:
+                    continue
+                conditions.append(Prospect.job_title.ilike(f"%{kw}%"))
+                conditions.append(Prospect.headline.ilike(f"%{kw}%"))
+
+            if not conditions:
+                slack_bot = get_slack_bot()
+                await slack_bot.send_confirmation("No valid keywords provided.")
+                return
+
+            pool_result = await session.execute(
+                select(func.count(Prospect.id)).where(
+                    Prospect.activity_score.isnot(None)
+                )
+            )
+            pool_size = pool_result.scalar() or 0
+
+            result = await session.execute(
+                select(Prospect)
+                .where(
+                    or_(*conditions),
+                    Prospect.activity_score.isnot(None),
+                )
+                .order_by(Prospect.activity_score.desc().nullslast())
+                .limit(15)
+            )
+            prospects = result.scalars().all()
+
+            leads = [
+                {
+                    "full_name": p.full_name,
+                    "job_title": p.job_title,
+                    "company_name": p.company_name,
+                    "location": p.location,
+                    "headline": p.headline,
+                    "activity_score": float(p.activity_score) if p.activity_score else 0,
+                    "linkedin_url": p.linkedin_url,
+                }
+                for p in prospects
+            ]
+
+        slack_bot = get_slack_bot()
+
+        if leads:
+            await slack_bot.send_gift_leads_results(
+                prospect_name=prospect_name,
+                leads=leads,
+                pool_size=pool_size,
+                keywords=keywords,
+            )
+        else:
+            await slack_bot.send_confirmation(
+                f"No matching leads found for keywords: {', '.join(keywords)}\n"
+                f"Pool has {pool_size} prospects with activity scores.\n"
+                f"Run the gift leads pipeline locally to build the pool."
+            )
+
+    except Exception as e:
+        logger.error(f"Error processing gift leads: {e}", exc_info=True)
+        slack_bot = get_slack_bot()
+        await slack_bot.send_confirmation(f"Error finding gift leads: {e}")
+
+
+# =============================================================================
 # Pitched Channel Helpers and Handlers
 # =============================================================================
 
@@ -1744,6 +1873,11 @@ async def slack_interactions(
         # Get slack user ID for classification tracking
         slack_user_id = payload.get("user", {}).get("id", "unknown")
 
+        # Handle gift leads action (uses draft_id)
+        if action_id == "gift_leads":
+            await handle_gift_leads(draft_id, trigger_id)
+            return {"ok": True}
+
         # Route to appropriate handler
         if action_id == "approve":
             await handle_approve(draft_id, message_ts, background_tasks)
@@ -1873,6 +2007,39 @@ async def slack_interactions(
 
             slack_user_id = payload.get("user", {}).get("id", "unknown")
             await handle_not_icp_modal_submit(draft_id, notes, slack_user_id, background_tasks)
+
+        # Handle gift leads modal submission
+        elif callback_id == "gift_leads_submit":
+            try:
+                prospect_id = uuid.UUID(private_metadata)
+            except ValueError:
+                logger.error(f"Invalid prospect_id in metadata: {private_metadata}")
+                return {"ok": True}
+
+            keywords_text = (
+                values.get("keywords_input", {})
+                .get("keywords_text", {})
+                .get("value", "")
+            )
+
+            keywords = [k.strip() for k in keywords_text.split(",") if k.strip()]
+
+            if keywords:
+                prospect_name = "Prospect"
+                try:
+                    async with async_session_factory() as session:
+                        p_result = await session.execute(
+                            select(Prospect).where(Prospect.id == prospect_id)
+                        )
+                        p = p_result.scalar_one_or_none()
+                        if p:
+                            prospect_name = p.full_name or "Prospect"
+                except Exception:
+                    pass
+
+                background_tasks.add_task(
+                    _process_gift_leads, prospect_id, keywords, prospect_name
+                )
 
     return {"ok": True}
 
