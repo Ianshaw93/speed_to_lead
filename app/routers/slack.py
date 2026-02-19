@@ -2013,6 +2013,10 @@ async def slack_interactions(
             )
 
             if message_text:
+                logger.info(
+                    f"Pitched message submit for prospect {prospect_id}: "
+                    f"message={message_text!r}, schedule={schedule_time}"
+                )
                 await handle_pitched_send_message_submit(
                     prospect_id, message_text, schedule_time, background_tasks
                 )
