@@ -192,6 +192,13 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
                 await session.flush()  # Get the ID
                 logger.info(f"Created conversation {conversation.id}")
 
+            # 1.5. Extract the last outbound message (the one that triggered this reply)
+            triggering_msg = None
+            for msg in reversed(payload.all_recent_messages):
+                if msg.is_reply is False:  # Explicit False = we sent it
+                    triggering_msg = msg.message
+                    break
+
             # 2. Detect if this is the first reply (before logging this message)
             from sqlalchemy import func
             inbound_count_result = await session.execute(
@@ -253,6 +260,7 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
                 funnel_stage=draft_result.detected_stage,
                 stage_reasoning=draft_result.stage_reasoning,
                 is_first_reply=is_first_reply,
+                triggering_message=triggering_msg,
             )
             print(f"Slack notification sent, ts: {slack_ts}", flush=True)
             logger.info(f"Sent Slack notification, ts: {slack_ts}")
@@ -264,6 +272,7 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
                 status=DraftStatus.PENDING,
                 ai_draft=draft_result.reply,
                 slack_message_ts=slack_ts,
+                triggering_message=triggering_msg,
                 is_first_reply=is_first_reply,
             )
             session.add(draft)
@@ -1616,6 +1625,53 @@ async def get_funnel_prospects(stage: str = "pitched") -> dict:
                 }
                 for p in prospects
             ],
+        }
+
+
+@app.get("/admin/message-effectiveness")
+async def message_effectiveness(limit: int = 50) -> dict:
+    """Get positive-classified drafts with their triggering messages.
+
+    Shows which outbound messages are earning positive replies,
+    enabling message effectiveness analysis.
+
+    Query params:
+        limit: Max results (default 50).
+    """
+    from sqlalchemy import func
+
+    async with async_session_factory() as session:
+        query = (
+            select(Draft, Conversation, Prospect)
+            .join(Conversation, Draft.conversation_id == Conversation.id)
+            .outerjoin(Prospect, Prospect.conversation_id == Conversation.id)
+            .where(Draft.triggering_message.isnot(None))
+            .order_by(Draft.created_at.desc())
+            .limit(limit)
+        )
+        result = await session.execute(query)
+        rows = result.all()
+
+        items = []
+        for draft, conversation, prospect in rows:
+            items.append({
+                "prospect_name": prospect.full_name if prospect else conversation.lead_name,
+                "linkedin_url": prospect.linkedin_url if prospect else conversation.linkedin_profile_url,
+                "triggering_message": draft.triggering_message,
+                "reply": draft.ai_draft,
+                "classification": draft.classification.value if draft.classification else None,
+                "classified_at": draft.classified_at.isoformat() if draft.classified_at else None,
+                "created_at": draft.created_at.isoformat(),
+                "is_first_reply": draft.is_first_reply,
+            })
+
+        # Summary stats
+        positive_count = sum(1 for i in items if i["classification"] == "positive")
+
+        return {
+            "total": len(items),
+            "positive_count": positive_count,
+            "items": items,
         }
 
 

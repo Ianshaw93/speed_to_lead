@@ -339,6 +339,85 @@ class TestTwoPassGeneration:
             assert mock_create.call_count == 2
 
 
+class TestSummarizeAndDraftComment:
+    """Tests for the summarize_and_draft_comment method."""
+
+    @pytest.fixture
+    def client(self):
+        """Create a DeepSeek client for testing."""
+        return DeepSeekClient(api_key="test_api_key")
+
+    @pytest.mark.asyncio
+    async def test_returns_token_usage(self, client):
+        """Should return prompt_tokens and completion_tokens."""
+        mock_usage = MagicMock()
+        mock_usage.prompt_tokens = 150
+        mock_usage.completion_tokens = 80
+
+        mock_completion = MagicMock()
+        mock_completion.choices = [
+            MagicMock(
+                message=MagicMock(
+                    content='{"summary": "Test summary", "comment": "Nice post!"}'
+                )
+            )
+        ]
+        mock_completion.usage = mock_usage
+
+        with patch.object(
+            client._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+        ) as mock_create:
+            mock_create.return_value = mock_completion
+
+            summary, comment, prompt_tokens, completion_tokens = (
+                await client.summarize_and_draft_comment(
+                    author_name="Test Author",
+                    author_headline="CEO",
+                    author_category="prospect",
+                    post_snippet="Test post content",
+                )
+            )
+
+        assert summary == "Test summary"
+        assert comment == "Nice post!"
+        assert prompt_tokens == 150
+        assert completion_tokens == 80
+
+    @pytest.mark.asyncio
+    async def test_returns_zero_tokens_when_usage_missing(self, client):
+        """Should return 0 tokens when usage is not in the response."""
+        mock_completion = MagicMock()
+        mock_completion.choices = [
+            MagicMock(
+                message=MagicMock(
+                    content='{"summary": "Summary", "comment": "Comment"}'
+                )
+            )
+        ]
+        mock_completion.usage = None
+
+        with patch.object(
+            client._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+        ) as mock_create:
+            mock_create.return_value = mock_completion
+
+            _, _, prompt_tokens, completion_tokens = (
+                await client.summarize_and_draft_comment(
+                    author_name="Author",
+                    author_headline=None,
+                    author_category="influencer",
+                    post_snippet="Post text",
+                )
+            )
+
+        assert prompt_tokens == 0
+        assert completion_tokens == 0
+
+
 class TestGenerateReplyDraft:
     """Tests for the generate_reply_draft helper function."""
 

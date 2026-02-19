@@ -11,7 +11,7 @@ from typing import Any
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
@@ -1718,11 +1718,38 @@ async def _send_pitched_message_now(
             )
             prospect = result.scalar_one_or_none()
 
-            if not prospect or not prospect.conversation_id:
-                logger.error(f"Prospect {prospect_id} not found or no conversation linked")
+            if not prospect:
+                logger.error(f"Prospect {prospect_id} not found")
                 slack_bot = get_slack_bot()
                 await slack_bot.send_confirmation(
-                    "Error: Prospect not found or no conversation linked."
+                    f"Error: Prospect {prospect_id} not found."
+                )
+                return
+
+            # Auto-link conversation if missing
+            if not prospect.conversation_id and prospect.linkedin_url:
+                conv_search = await session.execute(
+                    select(Conversation).where(
+                        func.lower(Conversation.linkedin_profile_url)
+                        == prospect.linkedin_url.lower().strip().rstrip("/")
+                    )
+                )
+                found_conv = conv_search.scalar_one_or_none()
+                if found_conv:
+                    prospect.conversation_id = found_conv.id
+                    await session.commit()
+                    logger.info(
+                        f"Auto-linked conversation {found_conv.id} to prospect {prospect_id}"
+                    )
+
+            if not prospect.conversation_id:
+                logger.error(
+                    f"Prospect {prospect.full_name} ({prospect_id}) has no conversation linked"
+                )
+                slack_bot = get_slack_bot()
+                await slack_bot.send_confirmation(
+                    f"Cannot send to {prospect.full_name or 'prospect'}: "
+                    "no HeyReach conversation found. They may not have replied yet."
                 )
                 return
 

@@ -153,6 +153,8 @@ class Draft(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    # The outbound message that triggered this reply
+    triggering_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Classification for metrics
     is_first_reply: Mapped[bool] = mapped_column(default=False)
     classification: Mapped[ReplyClassification | None] = mapped_column(
@@ -397,6 +399,12 @@ class DailyMetrics(Base):
     heyreach_uploaded: Mapped[int] = mapped_column(default=0)
     apify_cost: Mapped[Decimal] = mapped_column(Numeric(10, 4), default=Decimal("0"))
     deepseek_cost: Mapped[Decimal] = mapped_column(Numeric(10, 4), default=Decimal("0"))
+
+    # Engagement metrics (from engagement monitoring)
+    engagement_apify_cost: Mapped[Decimal] = mapped_column(Numeric(10, 4), default=Decimal("0"))
+    engagement_deepseek_cost: Mapped[Decimal] = mapped_column(Numeric(10, 4), default=Decimal("0"))
+    engagement_checks: Mapped[int] = mapped_column(default=0)
+    engagement_posts_found: Mapped[int] = mapped_column(default=0)
 
     # Content metrics (from contentCreator)
     content_drafts_created: Mapped[int] = mapped_column(default=0)

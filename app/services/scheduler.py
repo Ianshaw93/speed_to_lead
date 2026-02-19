@@ -166,7 +166,7 @@ async def send_scheduled_pitched_message(
     from app.models import Conversation, MessageDirection, MessageLog, Prospect
     from app.services.heyreach import get_heyreach_client, HeyReachError
     from app.services.slack import get_slack_bot
-    from sqlalchemy import select
+    from sqlalchemy import func, select
 
     logger = logging.getLogger(__name__)
 
@@ -178,11 +178,38 @@ async def send_scheduled_pitched_message(
             )
             prospect = result.scalar_one_or_none()
 
-            if not prospect or not prospect.conversation_id:
-                logger.error(f"Prospect {prospect_id} not found or has no conversation")
+            if not prospect:
+                logger.error(f"Prospect {prospect_id} not found")
                 bot = get_slack_bot()
                 await bot.send_confirmation(
-                    f"Scheduled message failed: prospect not found or no conversation linked."
+                    f"Scheduled message failed: prospect not found."
+                )
+                return
+
+            # Auto-link conversation if missing
+            if not prospect.conversation_id and prospect.linkedin_url:
+                conv_search = await session.execute(
+                    select(Conversation).where(
+                        func.lower(Conversation.linkedin_profile_url)
+                        == prospect.linkedin_url.lower().strip().rstrip("/")
+                    )
+                )
+                found_conv = conv_search.scalar_one_or_none()
+                if found_conv:
+                    prospect.conversation_id = found_conv.id
+                    await session.commit()
+                    logger.info(
+                        f"Auto-linked conversation {found_conv.id} to prospect {prospect_id}"
+                    )
+
+            if not prospect.conversation_id:
+                logger.error(
+                    f"Prospect {prospect.full_name} ({prospect_id}) has no conversation"
+                )
+                bot = get_slack_bot()
+                await bot.send_confirmation(
+                    f"Scheduled message failed for {prospect.full_name or 'prospect'}: "
+                    "no HeyReach conversation found. They may not have replied yet."
                 )
                 return
 

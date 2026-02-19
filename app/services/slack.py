@@ -38,6 +38,7 @@ def build_draft_message(
     ai_draft: str,
     funnel_stage: FunnelStage | None = None,
     stage_reasoning: str | None = None,
+    triggering_message: str | None = None,
 ) -> list[dict[str, Any]]:
     """Build Slack Block Kit message for draft notification.
 
@@ -50,6 +51,7 @@ def build_draft_message(
         ai_draft: The AI-generated draft reply.
         funnel_stage: The detected funnel stage (optional).
         stage_reasoning: AI reasoning for stage detection (optional).
+        triggering_message: The outbound message that triggered this reply (optional).
 
     Returns:
         List of Slack Block Kit blocks.
@@ -88,20 +90,31 @@ def build_draft_message(
             "elements": [{"type": "mrkdwn", "text": stage_text}]
         })
 
-    blocks.extend([
-        {
+    blocks.append({
+        "type": "section",
+        "fields": [
+            {
+                "type": "mrkdwn",
+                "text": f"*From:*\n{lead_info}"
+            },
+            {
+                "type": "mrkdwn",
+                "text": f"*LinkedIn:*\n<{linkedin_url}|View Profile>"
+            }
+        ]
+    })
+
+    # Show the outbound message that triggered this reply (if available)
+    if triggering_message:
+        blocks.append({
             "type": "section",
-            "fields": [
-                {
-                    "type": "mrkdwn",
-                    "text": f"*From:*\n{lead_info}"
-                },
-                {
-                    "type": "mrkdwn",
-                    "text": f"*LinkedIn:*\n<{linkedin_url}|View Profile>"
-                }
-            ]
-        },
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Our Message:*\n{triggering_message}"
+            }
+        })
+
+    blocks.extend([
         {
             "type": "section",
             "text": {
@@ -825,6 +838,7 @@ class SlackBot:
         funnel_stage: FunnelStage | None = None,
         stage_reasoning: str | None = None,
         is_first_reply: bool = False,
+        triggering_message: str | None = None,
     ) -> str:
         """Send a draft notification to Slack.
 
@@ -839,6 +853,7 @@ class SlackBot:
             funnel_stage: The detected funnel stage (optional).
             stage_reasoning: AI reasoning for stage detection (optional).
             is_first_reply: Whether this is the lead's first reply.
+            triggering_message: The outbound message that triggered this reply (optional).
 
         Returns:
             The Slack message timestamp (ts) for updates.
@@ -856,6 +871,7 @@ class SlackBot:
                 ai_draft=ai_draft,
                 funnel_stage=funnel_stage,
                 stage_reasoning=stage_reasoning,
+                triggering_message=triggering_message,
             )
             # Add classification buttons (above action buttons)
             blocks.extend(build_classification_buttons(draft_id, is_first_reply))

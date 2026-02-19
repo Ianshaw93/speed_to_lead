@@ -189,7 +189,7 @@ class DeepSeekClient:
         author_headline: str | None,
         author_category: str,
         post_snippet: str,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, int, int]:
         """Summarize a LinkedIn post and draft an engagement comment.
 
         Args:
@@ -199,7 +199,7 @@ class DeepSeekClient:
             post_snippet: The post content from search results.
 
         Returns:
-            Tuple of (summary, draft_comment).
+            Tuple of (summary, draft_comment, prompt_tokens, completion_tokens).
 
         Raises:
             DeepSeekError: If the API call fails.
@@ -229,6 +229,13 @@ class DeepSeekClient:
 
             content = completion.choices[0].message.content
 
+            # Extract token usage
+            prompt_tokens = 0
+            completion_tokens = 0
+            if completion.usage:
+                prompt_tokens = completion.usage.prompt_tokens or 0
+                completion_tokens = completion.usage.completion_tokens or 0
+
             # Parse JSON response (strip markdown code fences if present)
             try:
                 clean = content.strip()
@@ -245,7 +252,7 @@ class DeepSeekClient:
                 summary = "Could not parse summary"
                 comment = content
 
-            return summary, comment
+            return summary, comment, prompt_tokens, completion_tokens
 
         except DeepSeekError:
             raise

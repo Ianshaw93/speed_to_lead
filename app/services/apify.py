@@ -29,7 +29,7 @@ class ApifyService:
         self,
         linkedin_urls: list[str],
         max_posts: int = 10,
-    ) -> list[dict]:
+    ) -> tuple[list[dict], float]:
         """Scrape recent posts from LinkedIn profiles.
 
         This is a synchronous call (Apify client is sync). Callers should
@@ -40,7 +40,7 @@ class ApifyService:
             max_posts: Maximum posts per profile.
 
         Returns:
-            List of post dicts from the actor output.
+            Tuple of (list of post dicts, cost in USD).
 
         Raises:
             ApifyError: If the actor run fails.
@@ -55,12 +55,14 @@ class ApifyService:
                 }
             )
 
+            cost_usd = float(run.get("usageTotalUsd", 0) or 0)
+
             results = list(
                 self._client.dataset(run["defaultDatasetId"]).iterate_items()
             )
 
-            logger.info(f"Apify returned {len(results)} posts")
-            return results
+            logger.info(f"Apify returned {len(results)} posts (cost: ${cost_usd:.4f})")
+            return results, cost_usd
 
         except Exception as e:
             raise ApifyError(f"Apify scrape failed: {e}") from e

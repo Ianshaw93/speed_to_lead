@@ -7,16 +7,21 @@ and draft comments, and sends them to Slack for approval.
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import async_session_factory
-from app.models import EngagementPost, WatchedProfile
+from app.models import DailyMetrics, EngagementPost, WatchedProfile
 from app.services.apify import ApifyError, ApifyService, get_apify_service
 from app.services.deepseek import DeepSeekError, get_deepseek_client
 from app.services.slack import SlackError, get_slack_bot
+
+# DeepSeek pricing (deepseek-chat): $0.27/M input, $1.10/M output
+DEEPSEEK_INPUT_COST_PER_TOKEN = Decimal("0.00000027")
+DEEPSEEK_OUTPUT_COST_PER_TOKEN = Decimal("0.0000011")
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +48,8 @@ async def check_engagement_posts() -> dict:
     posts_new = 0
     posts_notified = 0
     errors = []
+    apify_cost_usd = Decimal("0")
+    deepseek_cost_usd = Decimal("0")
 
     try:
         async with async_session_factory() as session:
@@ -60,6 +67,8 @@ async def check_engagement_posts() -> dict:
                     "posts_new": 0,
                     "posts_notified": 0,
                     "errors": [],
+                    "apify_cost_usd": 0,
+                    "deepseek_cost_usd": 0,
                 }
 
             logger.info(f"Checking {len(profiles)} active profiles")
@@ -70,11 +79,12 @@ async def check_engagement_posts() -> dict:
 
             apify = get_apify_service()
             try:
-                all_posts = await asyncio.to_thread(
+                all_posts, apify_run_cost = await asyncio.to_thread(
                     apify.scrape_profile_posts,
                     linkedin_urls=profile_urls,
                     max_posts=1,
                 )
+                apify_cost_usd = Decimal(str(apify_run_cost))
             except ApifyError as e:
                 logger.error(f"Apify scrape failed: {e}", exc_info=True)
                 errors.append(f"Apify: {e}")
@@ -84,6 +94,8 @@ async def check_engagement_posts() -> dict:
                     "posts_new": 0,
                     "posts_notified": 0,
                     "errors": errors[:10],
+                    "apify_cost_usd": 0,
+                    "deepseek_cost_usd": 0,
                 }
 
             posts_found = len(all_posts)
@@ -108,7 +120,10 @@ async def check_engagement_posts() -> dict:
             # 3-7. Process each post
             for item in filtered_posts:
                 try:
-                    notified = await _process_post(session, item, profile_map, apify)
+                    notified, post_deepseek_cost = await _process_post(
+                        session, item, profile_map, apify
+                    )
+                    deepseek_cost_usd += post_deepseek_cost
                     if notified:
                         posts_notified += 1
                     posts_new += 1
@@ -124,6 +139,14 @@ async def check_engagement_posts() -> dict:
                 profile.last_checked_at = datetime.now(timezone.utc)
                 profiles_checked += 1
 
+            # Persist costs to DailyMetrics
+            await _update_daily_metrics(
+                session,
+                apify_cost=apify_cost_usd,
+                deepseek_cost=deepseek_cost_usd,
+                posts_found=posts_new,
+            )
+
             await session.commit()
 
     except Exception as e:
@@ -136,6 +159,8 @@ async def check_engagement_posts() -> dict:
         "posts_new": posts_new,
         "posts_notified": posts_notified,
         "errors": errors[:10],
+        "apify_cost_usd": float(apify_cost_usd),
+        "deepseek_cost_usd": float(deepseek_cost_usd),
     }
     logger.info(f"Engagement check complete: {summary}")
     return summary
@@ -150,15 +175,15 @@ async def _process_post(
     item: dict,
     profile_map: dict[str, WatchedProfile],
     apify: ApifyService,
-) -> bool:
+) -> tuple[bool, Decimal]:
     """Process a single post from Apify results.
 
-    Returns True if a Slack notification was sent.
+    Returns (notified, deepseek_cost_usd).
     Raises _AlreadySeen if the post URL was already in the DB.
     """
     post_url = apify.extract_post_url(item)
     if not post_url:
-        return False
+        return False, Decimal("0")
 
     # 3. Skip already-seen posts
     existing = await session.execute(
@@ -224,13 +249,20 @@ async def _process_post(
     # 4. Call DeepSeek for summary + draft comment
     summary = ""
     draft_comment = ""
+    post_deepseek_cost = Decimal("0")
     try:
         deepseek = get_deepseek_client()
-        summary, draft_comment = await deepseek.summarize_and_draft_comment(
-            author_name=profile.name,
-            author_headline=profile.headline,
-            author_category=profile.category.value,
-            post_snippet=snippet[:2000],  # Truncate very long posts
+        summary, draft_comment, prompt_tokens, completion_tokens = (
+            await deepseek.summarize_and_draft_comment(
+                author_name=profile.name,
+                author_headline=profile.headline,
+                author_category=profile.category.value,
+                post_snippet=snippet[:2000],  # Truncate very long posts
+            )
+        )
+        post_deepseek_cost = (
+            Decimal(prompt_tokens) * DEEPSEEK_INPUT_COST_PER_TOKEN
+            + Decimal(completion_tokens) * DEEPSEEK_OUTPUT_COST_PER_TOKEN
         )
     except DeepSeekError as e:
         logger.error(f"DeepSeek error for {post_url}: {e}")
@@ -265,4 +297,33 @@ async def _process_post(
     )
     session.add(engagement_post)
 
-    return slack_ts is not None
+    return slack_ts is not None, post_deepseek_cost
+
+
+async def _update_daily_metrics(
+    session: AsyncSession,
+    apify_cost: Decimal,
+    deepseek_cost: Decimal,
+    posts_found: int,
+) -> None:
+    """Upsert engagement costs into today's DailyMetrics row."""
+    today = date.today()
+    result = await session.execute(
+        select(DailyMetrics).where(DailyMetrics.date == today)
+    )
+    metrics = result.scalar_one_or_none()
+
+    if metrics is None:
+        metrics = DailyMetrics(
+            date=today,
+            engagement_apify_cost=Decimal("0"),
+            engagement_deepseek_cost=Decimal("0"),
+            engagement_checks=0,
+            engagement_posts_found=0,
+        )
+        session.add(metrics)
+
+    metrics.engagement_apify_cost = (metrics.engagement_apify_cost or Decimal("0")) + apify_cost
+    metrics.engagement_deepseek_cost = (metrics.engagement_deepseek_cost or Decimal("0")) + deepseek_cost
+    metrics.engagement_checks = (metrics.engagement_checks or 0) + 1
+    metrics.engagement_posts_found = (metrics.engagement_posts_found or 0) + posts_found

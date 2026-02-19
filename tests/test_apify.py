@@ -34,10 +34,10 @@ class TestApifyService:
             assert run_input["maxPosts"] == 5
 
     def test_scrape_returns_all_results(self):
-        """Should return all items from the dataset."""
+        """Should return all items from the dataset and cost."""
         service = ApifyService(api_token="test-token")
 
-        mock_run = {"defaultDatasetId": "ds-123"}
+        mock_run = {"defaultDatasetId": "ds-123", "usageTotalUsd": 0.0123}
         mock_dataset = MagicMock()
         mock_dataset.iterate_items.return_value = [
             {"postUrl": "https://linkedin.com/posts/user_post-1", "text": "Post 1"},
@@ -48,12 +48,13 @@ class TestApifyService:
              patch.object(service._client, "dataset", return_value=mock_dataset):
             mock_actor.return_value.call.return_value = mock_run
 
-            results = service.scrape_profile_posts(
+            results, cost = service.scrape_profile_posts(
                 ["https://linkedin.com/in/test-user"],
             )
 
         assert len(results) == 2
         assert results[0]["text"] == "Post 1"
+        assert cost == 0.0123
 
     def test_scrape_handles_api_error(self):
         """Should raise ApifyError on API failure."""
@@ -66,10 +67,10 @@ class TestApifyService:
                 service.scrape_profile_posts(["https://linkedin.com/in/test"])
 
     def test_scrape_handles_empty_results(self):
-        """Should return empty list when no results."""
+        """Should return empty list and zero cost when no results."""
         service = ApifyService(api_token="test-token")
 
-        mock_run = {"defaultDatasetId": "ds-123"}
+        mock_run = {"defaultDatasetId": "ds-123", "usageTotalUsd": 0.001}
         mock_dataset = MagicMock()
         mock_dataset.iterate_items.return_value = []
 
@@ -77,9 +78,10 @@ class TestApifyService:
              patch.object(service._client, "dataset", return_value=mock_dataset):
             mock_actor.return_value.call.return_value = mock_run
 
-            results = service.scrape_profile_posts(["https://linkedin.com/in/test"])
+            results, cost = service.scrape_profile_posts(["https://linkedin.com/in/test"])
 
         assert results == []
+        assert cost == 0.001
 
     def test_extract_post_url_strips_query_params(self):
         """Should normalize post URLs by removing query params."""

@@ -55,6 +55,8 @@ pytest tests/test_file.py::test_name -v     # Run specific test
 pytest --live                                # Include live API tests
 ```
 
+**WARNING: `pytest -v` (full suite) can hang indefinitely.** Always run specific test files instead of the full suite. If you must run all tests, use a timeout: `timeout 120 pytest -v` and be prepared to kill it.
+
 ## Deployment
 
 This project is deployed on Railway. Deployment is triggered by pushing to GitHub.
