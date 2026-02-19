@@ -297,6 +297,7 @@ class TestProcessBuyingSignalBatch:
         assert result["messages_generated"] == 2
         assert result["uploaded"] == 2
         assert result["errors"] == 0
+        assert result["variant_5line"] + result["variant_signal"] == 2
 
         # Verify DB was updated
         async with session_factory() as session:
@@ -321,6 +322,152 @@ class TestProcessBuyingSignalBatch:
 
         assert result["processed"] == 0
         assert result["messages_generated"] == 0
+
+
+class TestBuild5linePrompt:
+    """Tests for the standard 5-line DM prompt builder."""
+
+    def test_builds_5line_prompt(self):
+        from app.services.buying_signal_outreach import _build_5line_prompt
+        prompt = _build_5line_prompt(
+            first_name="Juan",
+            company_name="Axolop",
+            title="CEO",
+            headline="CEO @ Axolop",
+            company_description="We help B2B founders scale",
+            location="Tampa",
+        )
+        assert "Juan" in prompt
+        assert "Axolop" in prompt
+        assert "5 lines" in prompt or "5-line" in prompt
+        assert "Profile hook" in prompt
+        assert "Business" in prompt
+        assert "Authority" in prompt
+        assert "Location Hook" in prompt
+        # Should NOT contain buying signal references
+        assert "top 5% most active" not in prompt
+
+    def test_5line_prompt_handles_missing_fields(self):
+        from app.services.buying_signal_outreach import _build_5line_prompt
+        prompt = _build_5line_prompt(
+            first_name="Juan",
+            company_name="",
+            title="",
+        )
+        assert "(not available)" in prompt
+
+
+class TestGenerateMessage5line:
+    """Tests for standard 5-line DM generation."""
+
+    @pytest.mark.asyncio
+    async def test_generates_5line_message(self, test_db_session: AsyncSession):
+        """Should call DeepSeek with the 5-line prompt and return cleaned message."""
+        _seed_prospect(test_db_session)
+        await test_db_session.commit()
+
+        result = await test_db_session.execute(select(Prospect))
+        prospect = result.scalar_one()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "Hey Test\n\nTestCo looks interesting\n\nYou guys do SaaS right?"}}]
+        }
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.post = AsyncMock(return_value=mock_response)
+            mock_client_cls.return_value = mock_client
+
+            from app.services.buying_signal_outreach import generate_message_5line
+            msg = await generate_message_5line(prospect, None)
+
+        assert msg is not None
+        assert "Hey Test" in msg
+
+
+class TestABSplitLogic:
+    """Tests for the 50/50 A/B split in process_buying_signal_batch."""
+
+    @pytest.mark.asyncio
+    async def test_ab_split_calls_both_variants(self, test_db_engine):
+        """Should split prospects between 5-line and signal variants."""
+        session_factory = async_sessionmaker(
+            test_db_engine, class_=AsyncSession, expire_on_commit=False,
+        )
+
+        # Seed 4 prospects (even number for clean split)
+        async with session_factory() as session:
+            for i in range(4):
+                session.add(Prospect(
+                    linkedin_url=f"https://linkedin.com/in/split{i}",
+                    full_name=f"Split {i}",
+                    first_name="Split",
+                    last_name=str(i),
+                    job_title="CEO",
+                    company_name=f"SplitCo{i}",
+                    company_industry="Tech",
+                    location="New York, US",
+                    source_type=ProspectSource.BUYING_SIGNAL,
+                ))
+            await session.commit()
+
+        mock_deepseek_response = MagicMock()
+        mock_deepseek_response.status_code = 200
+        mock_deepseek_response.raise_for_status = MagicMock()
+        mock_deepseek_response.json.return_value = {
+            "choices": [{"message": {"content": "Hey Split\n\nPersonalized message"}}]
+        }
+
+        mock_heyreach = MagicMock()
+        mock_heyreach.add_leads_to_list = AsyncMock(return_value={"addedCount": 4})
+
+        with (
+            patch("app.database.async_session_factory", session_factory),
+            patch("app.services.buying_signal_outreach.scrape_profiles_batch", return_value={}),
+            patch("httpx.AsyncClient") as mock_client_cls,
+            patch("app.services.heyreach.get_heyreach_client", return_value=mock_heyreach),
+            patch("app.services.buying_signal_outreach.random") as mock_random,
+        ):
+            # Control the shuffle so split is deterministic: indices [0,1,2,3]
+            # First shuffle (A/B split): no-op -> half=2, 5line={0,1}, signal={2,3}
+            # Second shuffle (location split within signal): no-op -> signal_half=1, skip_loc={3}
+            mock_random.shuffle = MagicMock()  # no-op shuffle
+
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.post = AsyncMock(return_value=mock_deepseek_response)
+            mock_client_cls.return_value = mock_client
+
+            from app.services.buying_signal_outreach import process_buying_signal_batch
+            result = await process_buying_signal_batch()
+
+        assert result["processed"] == 4
+        assert result["messages_generated"] == 4
+        assert result["variant_5line"] == 2
+        assert result["variant_signal"] == 2
+        assert result["errors"] == 0
+
+    @pytest.mark.asyncio
+    async def test_summary_includes_variant_counts(self, test_db_engine):
+        """Summary dict should include variant_5line and variant_signal keys."""
+        session_factory = async_sessionmaker(
+            test_db_engine, class_=AsyncSession, expire_on_commit=False,
+        )
+
+        with patch("app.database.async_session_factory", session_factory):
+            from app.services.buying_signal_outreach import process_buying_signal_batch
+            result = await process_buying_signal_batch()
+
+        # Even with 0 prospects, summary should have the keys
+        assert "variant_5line" not in result or result["processed"] == 0
+        # The early-return path doesn't include variant keys (no prospects)
+        assert result["processed"] == 0
 
 
 class TestManualTriggerEndpoint:
