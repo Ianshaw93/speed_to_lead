@@ -1470,6 +1470,322 @@ async def _process_gift_leads(
 
 
 # =============================================================================
+# Streamlined Gift Leads Flow (Confirm ICP -> Review -> Send DM)
+# =============================================================================
+
+
+def extract_icp_niche_from_dm(personalized_message: str | None) -> str:
+    """Extract ICP niche from personalized DM text.
+
+    Looks for patterns like:
+    - "You guys target [niche] right?"
+    - "I see you work with [niche]"
+
+    Args:
+        personalized_message: The personalized outreach message.
+
+    Returns:
+        Extracted niche string, or empty string if no match.
+    """
+    if not personalized_message:
+        return ""
+
+    import re
+
+    # Pattern: "you guys target X right?"
+    match = re.search(
+        r"[Yy]ou\s+(?:guys\s+)?target\s+(.+?)(?:\s+right\??|\s*\?)",
+        personalized_message,
+    )
+    if match:
+        return match.group(1).strip()
+
+    # Pattern: "you work with X"
+    match = re.search(
+        r"[Yy]ou\s+work\s+with\s+(.+?)(?:\s*[-–—.]|\s*$)",
+        personalized_message,
+    )
+    if match:
+        return match.group(1).strip()
+
+    return ""
+
+
+# Common stop words to filter from keyword derivation
+_STOP_WORDS = {
+    "a", "an", "the", "and", "or", "of", "in", "on", "at", "to", "for",
+    "is", "are", "was", "were", "be", "been", "being", "have", "has",
+    "had", "do", "does", "did", "will", "would", "could", "should",
+    "may", "might", "shall", "can", "with", "from", "by", "as", "into",
+    "their", "them", "they", "that", "this", "those", "these", "who",
+}
+
+
+def derive_keywords_from_icp(icp_text: str | None) -> str:
+    """Convert ICP description to comma-separated search keywords.
+
+    Filters out common stop words and returns meaningful terms.
+
+    Args:
+        icp_text: ICP description text.
+
+    Returns:
+        Comma-separated keywords string, or empty string.
+    """
+    if not icp_text:
+        return ""
+
+    import re
+
+    # Split on whitespace and punctuation
+    words = re.split(r'[\s,;/]+', icp_text.strip())
+    keywords = [
+        w.lower() for w in words
+        if w.lower() not in _STOP_WORDS and len(w) > 1
+    ]
+
+    return ", ".join(keywords) if keywords else ""
+
+
+async def handle_confirm_icp_gift_leads(
+    prospect_id: uuid.UUID,
+    trigger_id: str,
+) -> None:
+    """Handle confirm_icp_gift_leads button - open pre-filled ICP modal.
+
+    For buying signal prospects, ICP fields are pre-filled from the
+    personalized_message and icp_reason. For others, fields are blank.
+
+    Args:
+        prospect_id: The prospect to find leads for.
+        trigger_id: Slack trigger ID for opening modal.
+    """
+    try:
+        async with async_session_factory() as session:
+            result = await session.execute(
+                select(Prospect).where(Prospect.id == prospect_id)
+            )
+            prospect = result.scalar_one_or_none()
+
+            if not prospect:
+                logger.error(f"Prospect {prospect_id} not found for confirm ICP")
+                slack_bot = get_slack_bot()
+                await slack_bot.send_confirmation("Error: Prospect not found.")
+                return
+
+            # Get latest reply for context
+            lead_reply = ""
+            if prospect.conversation_id:
+                conv_result = await session.execute(
+                    select(Conversation).where(Conversation.id == prospect.conversation_id)
+                )
+                conversation = conv_result.scalar_one_or_none()
+                if conversation and conversation.conversation_history:
+                    # Find the last lead message
+                    for msg in reversed(conversation.conversation_history):
+                        if msg.get("role") == "lead":
+                            lead_reply = msg.get("content", "")
+                            break
+
+            # Pre-fill ICP for buying signal prospects
+            prefill_icp = ""
+            prefill_keywords = ""
+            if prospect.source_type == ProspectSource.BUYING_SIGNAL:
+                # Try to extract niche from personalized message
+                niche = extract_icp_niche_from_dm(prospect.personalized_message)
+                if niche:
+                    prefill_icp = niche
+                elif prospect.icp_reason:
+                    prefill_icp = prospect.icp_reason
+                prefill_keywords = derive_keywords_from_icp(prefill_icp)
+
+            slack_bot = get_slack_bot()
+            await slack_bot.open_confirm_icp_gift_leads_modal(
+                trigger_id=trigger_id,
+                prospect_id=prospect_id,
+                prospect_name=prospect.full_name or "Unknown",
+                lead_reply=lead_reply,
+                prefill_icp=prefill_icp,
+                prefill_keywords=prefill_keywords,
+            )
+
+    except Exception as e:
+        logger.error(f"Error opening confirm ICP modal: {e}", exc_info=True)
+        slack_bot = get_slack_bot()
+        await slack_bot.send_confirmation(f"Error opening confirm ICP modal: {e}")
+
+
+async def _process_gift_leads_with_send(
+    prospect_id: uuid.UUID,
+    keywords: list[str],
+    prospect_name: str,
+) -> None:
+    """Background task to search DB and post results with Send button.
+
+    Same logic as _process_gift_leads but posts results with a
+    "Send Leads to [Name]" button for composing a LinkedIn DM.
+    """
+    try:
+        async with async_session_factory() as session:
+            from sqlalchemy import or_
+
+            conditions = []
+            for kw in keywords:
+                kw = kw.strip()
+                if not kw:
+                    continue
+                conditions.append(Prospect.job_title.ilike(f"%{kw}%"))
+                conditions.append(Prospect.headline.ilike(f"%{kw}%"))
+
+            if not conditions:
+                slack_bot = get_slack_bot()
+                await slack_bot.send_confirmation("No valid keywords provided.")
+                return
+
+            pool_result = await session.execute(
+                select(func.count(Prospect.id)).where(
+                    Prospect.activity_score.isnot(None)
+                )
+            )
+            pool_size = pool_result.scalar() or 0
+
+            result = await session.execute(
+                select(Prospect)
+                .where(
+                    or_(*conditions),
+                    Prospect.activity_score.isnot(None),
+                )
+                .order_by(Prospect.activity_score.desc().nullslast())
+                .limit(15)
+            )
+            prospects = result.scalars().all()
+
+            leads = [
+                {
+                    "full_name": p.full_name,
+                    "job_title": p.job_title,
+                    "company_name": p.company_name,
+                    "location": p.location,
+                    "headline": p.headline,
+                    "activity_score": float(p.activity_score) if p.activity_score else 0,
+                    "linkedin_url": p.linkedin_url,
+                }
+                for p in prospects
+            ]
+
+        slack_bot = get_slack_bot()
+
+        if leads:
+            await slack_bot.send_gift_leads_results_with_send_button(
+                prospect_id=prospect_id,
+                prospect_name=prospect_name,
+                leads=leads,
+                pool_size=pool_size,
+                keywords=keywords,
+            )
+        else:
+            await slack_bot.send_confirmation(
+                f"No matching leads found for keywords: {', '.join(keywords)}\n"
+                f"Pool has {pool_size} prospects with activity scores.\n"
+                f"Run the gift leads pipeline locally to build the pool."
+            )
+
+    except Exception as e:
+        logger.error(f"Error processing gift leads with send: {e}", exc_info=True)
+        slack_bot = get_slack_bot()
+        await slack_bot.send_confirmation(f"Error finding gift leads: {e}")
+
+
+async def handle_send_gift_leads_dm(
+    prospect_id: uuid.UUID,
+    trigger_id: str,
+) -> None:
+    """Handle send_gift_leads_dm button - open editable DM modal with leads list.
+
+    Re-queries leads from DB and formats them as a LinkedIn DM.
+
+    Args:
+        prospect_id: The prospect to send leads to.
+        trigger_id: Slack trigger ID for opening modal.
+    """
+    try:
+        async with async_session_factory() as session:
+            result = await session.execute(
+                select(Prospect).where(Prospect.id == prospect_id)
+            )
+            prospect = result.scalar_one_or_none()
+
+            if not prospect:
+                logger.error(f"Prospect {prospect_id} not found for send DM")
+                slack_bot = get_slack_bot()
+                await slack_bot.send_confirmation("Error: Prospect not found.")
+                return
+
+            prospect_name = prospect.full_name or "Unknown"
+            first_name = prospect.first_name or prospect_name.split()[0]
+
+            # Re-query leads using the prospect's ICP reason as keywords
+            # (the same keywords used in the search that produced the results)
+            # For now, get latest gift leads by searching with broad keywords
+            from sqlalchemy import or_
+
+            # Get leads that have activity scores (same pool as gift leads)
+            leads_result = await session.execute(
+                select(Prospect)
+                .where(
+                    Prospect.activity_score.isnot(None),
+                    Prospect.id != prospect_id,
+                )
+                .order_by(Prospect.activity_score.desc().nullslast())
+                .limit(10)
+            )
+            leads = leads_result.scalars().all()
+
+            # Format leads as DM text
+            lead_lines = []
+            for i, lead in enumerate(leads, 1):
+                name = lead.full_name or "Unknown"
+                title = lead.job_title or ""
+                company = lead.company_name or ""
+                line = f"{i}. {name}"
+                if title:
+                    line += f" - {title}"
+                if company:
+                    line += f" @ {company}"
+                lead_lines.append(line)
+
+            leads_text = "\n".join(lead_lines)
+            draft_dm = (
+                f"Hey {first_name}, here are some people in your space "
+                f"that might be worth connecting with:\n\n{leads_text}"
+            )
+
+            slack_bot = get_slack_bot()
+            await slack_bot.open_send_gift_leads_dm_modal(
+                trigger_id=trigger_id,
+                prospect_id=prospect_id,
+                prospect_name=prospect_name,
+                draft_dm=draft_dm,
+            )
+
+    except Exception as e:
+        logger.error(f"Error opening send DM modal: {e}", exc_info=True)
+        slack_bot = get_slack_bot()
+        await slack_bot.send_confirmation(f"Error opening DM modal: {e}")
+
+
+async def _process_send_gift_leads_dm(
+    prospect_id: uuid.UUID,
+    message_text: str,
+) -> None:
+    """Background task to send gift leads DM via HeyReach.
+
+    Reuses _send_pitched_message_now for the actual send.
+    """
+    await _send_pitched_message_now(prospect_id, message_text)
+
+
+# =============================================================================
 # Pitched Channel Helpers and Handlers
 # =============================================================================
 
@@ -1896,6 +2212,20 @@ async def slack_interactions(
                 await handle_pitched_booked(prospect_id, message_ts, background_tasks)
             return {"ok": True}
 
+        # Handle streamlined gift leads actions (use prospect_id)
+        if action_id in ("confirm_icp_gift_leads", "send_gift_leads_dm"):
+            try:
+                prospect_id = uuid.UUID(value_str)
+            except ValueError:
+                logger.error(f"Invalid prospect_id for {action_id}: {value_str}")
+                return {"ok": True}
+
+            if action_id == "confirm_icp_gift_leads":
+                await handle_confirm_icp_gift_leads(prospect_id, trigger_id)
+            elif action_id == "send_gift_leads_dm":
+                await handle_send_gift_leads_dm(prospect_id, trigger_id)
+            return {"ok": True}
+
         # Handle follow-up configuration actions (use conversation_id)
         if action_id in ("configure_followups", "skip_followups"):
             try:
@@ -2059,7 +2389,7 @@ async def slack_interactions(
             slack_user_id = payload.get("user", {}).get("id", "unknown")
             await handle_not_icp_modal_submit(draft_id, notes, slack_user_id, background_tasks)
 
-        # Handle gift leads modal submission
+        # Handle gift leads modal submission (legacy flow)
         elif callback_id == "gift_leads_submit":
             try:
                 prospect_id = uuid.UUID(private_metadata)
@@ -2090,6 +2420,58 @@ async def slack_interactions(
 
                 background_tasks.add_task(
                     _process_gift_leads, prospect_id, keywords, prospect_name
+                )
+
+        # Handle confirm ICP gift leads modal submission (streamlined flow)
+        elif callback_id == "confirm_icp_gift_leads_submit":
+            try:
+                prospect_id = uuid.UUID(private_metadata)
+            except ValueError:
+                logger.error(f"Invalid prospect_id in metadata: {private_metadata}")
+                return {"ok": True}
+
+            keywords_text = (
+                values.get("keywords_input", {})
+                .get("keywords_text", {})
+                .get("value", "")
+            )
+
+            keywords = [k.strip() for k in keywords_text.split(",") if k.strip()]
+
+            if keywords:
+                prospect_name = "Prospect"
+                try:
+                    async with async_session_factory() as session:
+                        p_result = await session.execute(
+                            select(Prospect).where(Prospect.id == prospect_id)
+                        )
+                        p = p_result.scalar_one_or_none()
+                        if p:
+                            prospect_name = p.full_name or "Prospect"
+                except Exception:
+                    pass
+
+                background_tasks.add_task(
+                    _process_gift_leads_with_send, prospect_id, keywords, prospect_name
+                )
+
+        # Handle send gift leads DM modal submission
+        elif callback_id == "send_gift_leads_dm_submit":
+            try:
+                prospect_id = uuid.UUID(private_metadata)
+            except ValueError:
+                logger.error(f"Invalid prospect_id in metadata: {private_metadata}")
+                return {"ok": True}
+
+            message_text = (
+                values.get("dm_input", {})
+                .get("dm_text", {})
+                .get("value", "")
+            )
+
+            if message_text:
+                background_tasks.add_task(
+                    _process_send_gift_leads_dm, prospect_id, message_text
                 )
 
     return {"ok": True}

@@ -1,7 +1,10 @@
 """Slack service for sending draft notifications and reports."""
 
+import logging
+import re
 import uuid
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 from slack_sdk.web.async_client import AsyncWebClient
@@ -10,6 +13,11 @@ from slack_sdk.errors import SlackApiError
 from app.config import settings
 from app.models import FunnelStage, WatchedProfileCategory
 from app.services.reports import format_minutes
+
+logger = logging.getLogger(__name__)
+
+# Default path to strategy file (module-level so tests can patch it)
+_STRATEGY_FILE_PATH = str(Path(__file__).resolve().parents[2] / ".claude" / "strategy.md")
 
 
 class SlackError(Exception):
@@ -143,6 +151,7 @@ def build_draft_message(
 def build_classification_buttons(
     draft_id: uuid.UUID,
     is_first_reply: bool = False,
+    prospect_id: uuid.UUID | None = None,
 ) -> list[dict[str, Any]]:
     """Build classification buttons for metrics tracking.
 
@@ -150,6 +159,8 @@ def build_classification_buttons(
         draft_id: The draft ID to include in action values.
         is_first_reply: Whether this is the first reply from the lead.
             If True, includes the "Positive Reply" button.
+        prospect_id: If provided, Gift Leads button uses confirm_icp_gift_leads
+            with prospect_id. If None, falls back to old gift_leads with draft_id.
 
     Returns:
         List of Slack Block Kit blocks (context + actions).
@@ -198,12 +209,22 @@ def build_classification_buttons(
     ])
 
     # Gift Leads button (always show)
-    elements.append({
-        "type": "button",
-        "text": {"type": "plain_text", "text": "\U0001f381 Gift Leads", "emoji": True},
-        "action_id": "gift_leads",
-        "value": str(draft_id),
-    })
+    # When prospect_id is available, use the streamlined confirm_icp flow
+    # Otherwise fall back to the legacy gift_leads flow (uses draft_id)
+    if prospect_id is not None:
+        elements.append({
+            "type": "button",
+            "text": {"type": "plain_text", "text": "\U0001f381 Gift Leads", "emoji": True},
+            "action_id": "confirm_icp_gift_leads",
+            "value": str(prospect_id),
+        })
+    else:
+        elements.append({
+            "type": "button",
+            "text": {"type": "plain_text", "text": "\U0001f381 Gift Leads", "emoji": True},
+            "action_id": "gift_leads",
+            "value": str(draft_id),
+        })
 
     return [
         {
@@ -306,6 +327,34 @@ def parse_action_payload(payload: dict) -> tuple[str, uuid.UUID]:
         raise ValueError(f"Invalid action payload: {e}") from e
 
 
+def _get_current_focus(path: str | None = None) -> str | None:
+    """Read the 'This Week's Focus' section from strategy.md.
+
+    Args:
+        path: Override path to the strategy file (for testing).
+
+    Returns:
+        The focus section text, or None if unavailable.
+    """
+    file_path = path or _STRATEGY_FILE_PATH
+    try:
+        text = Path(file_path).read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError, UnicodeDecodeError):
+        return None
+
+    # Extract text between "## This Week's Focus" and the next "## " heading (or EOF)
+    match = re.search(
+        r"## This Week's Focus\n+(.*?)(?=\n## |\Z)",
+        text,
+        re.DOTALL,
+    )
+    if not match:
+        return None
+
+    focus = match.group(1).strip()
+    return focus or None
+
+
 def build_daily_report_blocks(
     report_date: date,
     metrics: dict[str, Any],
@@ -349,6 +398,20 @@ def build_daily_report_blocks(
         {
             "type": "divider"
         },
+    ]
+
+    # Append "This Week's Focus" if available
+    focus_text = _get_current_focus()
+    if focus_text:
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*:dart: This Week's Focus*\n{focus_text}",
+            },
+        })
+
+    blocks.extend([
         {
             "type": "section",
             "fields": [
@@ -415,7 +478,7 @@ def build_daily_report_blocks(
                 }
             ]
         }
-    ]
+    ])
 
     return blocks
 
@@ -839,6 +902,7 @@ class SlackBot:
         stage_reasoning: str | None = None,
         is_first_reply: bool = False,
         triggering_message: str | None = None,
+        prospect_id: uuid.UUID | None = None,
     ) -> str:
         """Send a draft notification to Slack.
 
@@ -854,6 +918,7 @@ class SlackBot:
             stage_reasoning: AI reasoning for stage detection (optional).
             is_first_reply: Whether this is the lead's first reply.
             triggering_message: The outbound message that triggered this reply (optional).
+            prospect_id: The prospect ID for Gift Leads button (optional).
 
         Returns:
             The Slack message timestamp (ts) for updates.
@@ -874,7 +939,7 @@ class SlackBot:
                 triggering_message=triggering_message,
             )
             # Add classification buttons (above action buttons)
-            blocks.extend(build_classification_buttons(draft_id, is_first_reply))
+            blocks.extend(build_classification_buttons(draft_id, is_first_reply, prospect_id))
             # Add action buttons (Send, Edit, etc.)
             blocks.extend(build_action_buttons(draft_id))
 
@@ -1379,6 +1444,262 @@ class SlackBot:
             raise SlackError(f"Failed to send gift leads results: {e.response['error']}") from e
         except Exception as e:
             raise SlackError(f"Failed to send gift leads results: {e}") from e
+
+    async def open_confirm_icp_gift_leads_modal(
+        self,
+        trigger_id: str,
+        prospect_id: uuid.UUID,
+        prospect_name: str,
+        lead_reply: str = "",
+        prefill_icp: str = "",
+        prefill_keywords: str = "",
+    ) -> None:
+        """Open confirm ICP modal for the streamlined gift leads flow.
+
+        Args:
+            trigger_id: Slack trigger ID from the interaction.
+            prospect_id: The prospect to find leads for.
+            prospect_name: Name for display.
+            lead_reply: The prospect's latest reply (context).
+            prefill_icp: Pre-filled ICP description.
+            prefill_keywords: Pre-filled search keywords.
+
+        Raises:
+            SlackError: If opening modal fails.
+        """
+        blocks = []
+
+        # Show prospect's reply as read-only context
+        if lead_reply:
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*{prospect_name}'s reply:*\n> _{lead_reply[:500]}_",
+                },
+            })
+            blocks.append({"type": "divider"})
+
+        blocks.extend([
+            {
+                "type": "input",
+                "block_id": "icp_input",
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "icp_text",
+                    "multiline": True,
+                    "initial_value": prefill_icp,
+                    "placeholder": {
+                        "type": "plain_text",
+                        "text": "e.g., naturopath clinic owners, wellness practitioners",
+                    },
+                },
+                "label": {"type": "plain_text", "text": "ICP Description"},
+            },
+            {
+                "type": "input",
+                "block_id": "keywords_input",
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "keywords_text",
+                    "initial_value": prefill_keywords,
+                    "placeholder": {
+                        "type": "plain_text",
+                        "text": "e.g., naturopath, ND, clinic owner, wellness",
+                    },
+                },
+                "label": {"type": "plain_text", "text": "Search Keywords (comma-separated)"},
+            },
+        ])
+
+        try:
+            await self._client.views_open(
+                trigger_id=trigger_id,
+                view={
+                    "type": "modal",
+                    "callback_id": "confirm_icp_gift_leads_submit",
+                    "title": {"type": "plain_text", "text": "Confirm ICP & Send Leads"},
+                    "submit": {"type": "plain_text", "text": "Find Leads"},
+                    "close": {"type": "plain_text", "text": "Cancel"},
+                    "blocks": blocks,
+                    "private_metadata": str(prospect_id),
+                },
+            )
+        except SlackApiError as e:
+            raise SlackError(f"Failed to open confirm ICP modal: {e.response['error']}") from e
+        except Exception as e:
+            raise SlackError(f"Failed to open confirm ICP modal: {e}") from e
+
+    async def send_gift_leads_results_with_send_button(
+        self,
+        prospect_id: uuid.UUID,
+        prospect_name: str,
+        leads: list[dict],
+        pool_size: int,
+        keywords: list[str],
+    ) -> str:
+        """Post gift leads results with a Send Leads DM button.
+
+        Same as send_gift_leads_results but adds a button to compose
+        a LinkedIn DM with the leads list.
+
+        Args:
+            prospect_id: The prospect to send leads to.
+            prospect_name: Name of the prospect.
+            leads: List of lead dicts.
+            pool_size: Total prospects in the DB pool.
+            keywords: Keywords that were searched.
+
+        Returns:
+            The Slack message timestamp.
+
+        Raises:
+            SlackError: If sending fails.
+        """
+        try:
+            rows = []
+            for i, lead in enumerate(leads, 1):
+                name = lead.get("full_name") or "Unknown"
+                title = lead.get("job_title") or ""
+                company = lead.get("company_name") or ""
+                score = lead.get("activity_score") or 0
+                url = lead.get("linkedin_url") or ""
+                rows.append(f"{i}. *{name}* - {title} @ {company} (score: {score}) <{url}|LI>")
+
+            table_text = "\n".join(rows) if rows else "No leads found."
+
+            blocks = [
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": f"Gift Leads for {prospect_name}",
+                        "emoji": True,
+                    },
+                },
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": f"Keywords: {', '.join(keywords)} | {len(leads)} leads from {pool_size} prospects in DB",
+                        }
+                    ],
+                },
+                {"type": "divider"},
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": table_text[:3000],
+                    },
+                },
+            ]
+
+            # Add Send Leads button if there are results
+            if leads:
+                blocks.append({
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": f"Send Leads to {prospect_name}", "emoji": True},
+                            "style": "primary",
+                            "action_id": "send_gift_leads_dm",
+                            "value": str(prospect_id),
+                        }
+                    ],
+                })
+
+            response = await self._client.chat_postMessage(
+                channel=self._channel_id,
+                blocks=blocks,
+                text=f"Gift Leads for {prospect_name}: {len(leads)} matches",
+            )
+
+            # Upload CSV in thread
+            if leads:
+                import csv
+                import io
+
+                output = io.StringIO()
+                writer = csv.DictWriter(
+                    output,
+                    fieldnames=["full_name", "job_title", "company_name", "location", "activity_score", "linkedin_url"],
+                    extrasaction="ignore",
+                )
+                writer.writeheader()
+                writer.writerows(leads)
+
+                await self._client.files_upload_v2(
+                    channel=self._channel_id,
+                    content=output.getvalue(),
+                    filename=f"gift_leads_{prospect_name.replace(' ', '_')}.csv",
+                    title=f"Gift Leads CSV - {prospect_name}",
+                    thread_ts=response["ts"],
+                )
+
+            return response["ts"]
+
+        except SlackApiError as e:
+            raise SlackError(f"Failed to send gift leads results: {e.response['error']}") from e
+        except Exception as e:
+            raise SlackError(f"Failed to send gift leads results: {e}") from e
+
+    async def open_send_gift_leads_dm_modal(
+        self,
+        trigger_id: str,
+        prospect_id: uuid.UUID,
+        prospect_name: str,
+        draft_dm: str,
+    ) -> None:
+        """Open modal with pre-formatted LinkedIn DM containing leads list.
+
+        Args:
+            trigger_id: Slack trigger ID from the interaction.
+            prospect_id: The prospect to send to.
+            prospect_name: Name for display.
+            draft_dm: Pre-formatted DM text (editable).
+
+        Raises:
+            SlackError: If opening modal fails.
+        """
+        try:
+            await self._client.views_open(
+                trigger_id=trigger_id,
+                view={
+                    "type": "modal",
+                    "callback_id": "send_gift_leads_dm_submit",
+                    "title": {"type": "plain_text", "text": "Send Leads DM"},
+                    "submit": {"type": "plain_text", "text": "Send via LinkedIn"},
+                    "close": {"type": "plain_text", "text": "Cancel"},
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"*To:* {prospect_name}",
+                            },
+                        },
+                        {
+                            "type": "input",
+                            "block_id": "dm_input",
+                            "element": {
+                                "type": "plain_text_input",
+                                "action_id": "dm_text",
+                                "multiline": True,
+                                "initial_value": draft_dm,
+                            },
+                            "label": {"type": "plain_text", "text": "LinkedIn Message"},
+                        },
+                    ],
+                    "private_metadata": str(prospect_id),
+                },
+            )
+        except SlackApiError as e:
+            raise SlackError(f"Failed to open send DM modal: {e.response['error']}") from e
+        except Exception as e:
+            raise SlackError(f"Failed to open send DM modal: {e}") from e
 
     async def send_pitched_card(
         self,
