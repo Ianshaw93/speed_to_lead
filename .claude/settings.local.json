@@ -84,7 +84,10 @@
       "WebFetch(domain:apify.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(PGPASSWORD=\"FxvzWGNDpTtzlFccSOQKATscwIXJirFA\" psql:*)",
-      "Bash(where:*)"
+      "Bash(where:*)",
+      "Bash(wc:*)",
+      "WebFetch(domain:docs.google.com)",
+      "Bash(PYTHONIOENCODING=utf-8 python:*)"
     ]
   },
   "hooks": {
