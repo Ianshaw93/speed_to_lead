@@ -103,6 +103,10 @@ Use Railway MCP server for:
 - Environment: `d8e53f68-c745-4e25-bde6-10a46ac93495`
 - Service: `7cab4889-3675-4ef5-870c-63e803ce7082`
 
+## Growth Strategy
+
+See `.claude/strategy.md` for current priorities, funnel numbers, and the full list of levers to pull (ordered by impact). Updated 2026-02-21.
+
 ## Cross-Repo Knowledge Sharing
 
 This project is part of a 3-repo system. Read `.claude/CROSS_REPO.md` for shared context (endpoints, data flows, conventions).
