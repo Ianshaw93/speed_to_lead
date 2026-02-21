@@ -17,6 +17,7 @@ from app.models import (
     Conversation,
     DailyMetrics,
     Draft,
+    FunnelStage,
     ICPFeedback,
     MessageDirection,
     MessageLog,
@@ -905,6 +906,19 @@ async def backfill_funnel_stages(
 
     results = {"pitched": [], "calendar_sent": [], "booked": [], "not_found": []}
 
+    async def _sync_conversation_stage(
+        prospect: Prospect, target_stage: FunnelStage
+    ) -> None:
+        """Update the linked conversation's funnel_stage to match prospect."""
+        if not prospect.conversation_id:
+            return
+        conv_result = await session.execute(
+            select(Conversation).where(Conversation.id == prospect.conversation_id)
+        )
+        conv = conv_result.scalar_one_or_none()
+        if conv:
+            conv.funnel_stage = target_stage
+
     # Process pitched prospects
     for url in payload.pitched:
         normalized = normalize_linkedin_url(url)
@@ -916,6 +930,7 @@ async def backfill_funnel_stages(
         if prospect:
             if not prospect.pitched_at:
                 prospect.pitched_at = datetime.now(timezone.utc)
+            await _sync_conversation_stage(prospect, FunnelStage.PITCHED)
             results["pitched"].append(prospect.full_name or normalized)
         else:
             results["not_found"].append(url)
@@ -933,6 +948,7 @@ async def backfill_funnel_stages(
                 prospect.pitched_at = datetime.now(timezone.utc)
             if not prospect.calendar_sent_at:
                 prospect.calendar_sent_at = datetime.now(timezone.utc)
+            await _sync_conversation_stage(prospect, FunnelStage.CALENDAR_SENT)
             results["calendar_sent"].append(prospect.full_name or normalized)
         else:
             results["not_found"].append(url)
@@ -952,6 +968,7 @@ async def backfill_funnel_stages(
                 prospect.calendar_sent_at = datetime.now(timezone.utc)
             if not prospect.booked_at:
                 prospect.booked_at = datetime.now(timezone.utc)
+            await _sync_conversation_stage(prospect, FunnelStage.BOOKED)
             results["booked"].append(prospect.full_name or normalized)
         else:
             results["not_found"].append(url)

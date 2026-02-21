@@ -238,6 +238,82 @@ async def backfill_history_roles(request: Request) -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/admin/sync-funnel-stages")
+async def sync_funnel_stages(request: Request) -> dict:
+    """Sync conversation.funnel_stage from prospect timestamps.
+
+    Fixes mismatches where prospect has pitched_at/calendar_sent_at/booked_at
+    but the linked conversation.funnel_stage wasn't updated.
+
+    Protected by SECRET_KEY in the Authorization header.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    expected = f"Bearer {settings.secret_key}"
+    if auth_header != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        async with async_session_factory() as session:
+            # Get all prospects with funnel timestamps and a linked conversation
+            result = await session.execute(
+                select(Prospect).where(
+                    Prospect.conversation_id.isnot(None),
+                    Prospect.pitched_at.isnot(None),
+                )
+            )
+            prospects = result.scalars().all()
+
+            synced = 0
+            already_correct = 0
+            no_conv = 0
+
+            for prospect in prospects:
+                # Determine the correct stage from prospect timestamps
+                if prospect.booked_at:
+                    correct_stage = FunnelStage.BOOKED
+                elif prospect.calendar_sent_at:
+                    correct_stage = FunnelStage.CALENDAR_SENT
+                else:
+                    correct_stage = FunnelStage.PITCHED
+
+                # Get linked conversation
+                conv_result = await session.execute(
+                    select(Conversation).where(
+                        Conversation.id == prospect.conversation_id
+                    )
+                )
+                conv = conv_result.scalar_one_or_none()
+
+                if not conv:
+                    no_conv += 1
+                    continue
+
+                if conv.funnel_stage == correct_stage:
+                    already_correct += 1
+                    continue
+
+                logger.info(
+                    f"Syncing {prospect.full_name}: "
+                    f"{conv.funnel_stage} -> {correct_stage.value}"
+                )
+                conv.funnel_stage = correct_stage
+                synced += 1
+
+            await session.commit()
+
+            return {
+                "status": "ok",
+                "synced": synced,
+                "already_correct": already_correct,
+                "no_conversation": no_conv,
+                "total_prospects_checked": len(prospects),
+            }
+
+    except Exception as e:
+        logger.error(f"Funnel sync error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
     """Process an incoming message from HeyReach webhook.
 
