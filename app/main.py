@@ -136,6 +136,94 @@ async def run_migrations(request: Request) -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/admin/backfill-history-roles")
+async def backfill_history_roles(request: Request) -> dict:
+    """Backfill conversation_history roles using MessageLog direction.
+
+    Fixes the bug where all messages were stored with role:"lead".
+    Cross-references each history entry's content against MessageLog
+    to determine the correct role (lead vs you).
+
+    Protected by SECRET_KEY in the Authorization header.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    expected = f"Bearer {settings.secret_key}"
+    if auth_header != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        async with async_session_factory() as session:
+            # Get all conversations with history
+            result = await session.execute(select(Conversation))
+            conversations = result.scalars().all()
+
+            fixed = 0
+            skipped = 0
+            already_correct = 0
+
+            for conv in conversations:
+                if not conv.conversation_history:
+                    skipped += 1
+                    continue
+
+                # Check if any messages already have role="you" (already fixed)
+                roles = {msg.get("role") for msg in conv.conversation_history}
+                if "you" in roles:
+                    already_correct += 1
+                    continue
+
+                # Get all MessageLogs for this conversation
+                msg_result = await session.execute(
+                    select(MessageLog).where(
+                        MessageLog.conversation_id == conv.id
+                    )
+                )
+                msg_logs = msg_result.scalars().all()
+
+                if not msg_logs:
+                    skipped += 1
+                    continue
+
+                # Build a set of outbound message contents for fast lookup
+                outbound_contents = {
+                    ml.content.strip()
+                    for ml in msg_logs
+                    if ml.direction == MessageDirection.OUTBOUND
+                }
+
+                # Fix roles in conversation_history
+                updated = False
+                new_history = []
+                for msg in conv.conversation_history:
+                    content = (msg.get("content") or "").strip()
+                    if content in outbound_contents:
+                        new_msg = {**msg, "role": "you"}
+                        updated = True
+                    else:
+                        new_msg = {**msg, "role": "lead"}
+                    new_history.append(new_msg)
+
+                if updated:
+                    conv.conversation_history = new_history
+                    fixed += 1
+                else:
+                    skipped += 1
+
+            await session.commit()
+
+            return {
+                "status": "ok",
+                "fixed": fixed,
+                "already_correct": already_correct,
+                "skipped": skipped,
+                "total": len(conversations),
+            }
+
+    except Exception as e:
+        logger.error(f"Backfill error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
     """Process an incoming message from HeyReach webhook.
 
