@@ -348,42 +348,9 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
             # Update conversation with detected funnel stage
             conversation.funnel_stage = draft_result.detected_stage
 
-            # 4. Pre-generate draft ID so Slack buttons have correct ID
-            draft_id = uuid.uuid4()
-
-            # 5. Send draft to Slack for approval (with stage indicator)
-            print("Sending to Slack...", flush=True)
-            slack_bot = SlackBot()
-            slack_ts = await slack_bot.send_draft_notification(
-                draft_id=draft_id,
-                lead_name=payload.lead_name,
-                lead_title=None,  # Not in payload
-                lead_company=payload.lead_company,
-                linkedin_url=f"https://www.linkedin.com/messaging/thread/{payload.conversation_id}",
-                lead_message=payload.latest_message,
-                ai_draft=draft_result.reply,
-                funnel_stage=draft_result.detected_stage,
-                stage_reasoning=draft_result.stage_reasoning,
-                is_first_reply=is_first_reply,
-                triggering_message=triggering_msg,
-            )
-            print(f"Slack notification sent, ts: {slack_ts}", flush=True)
-            logger.info(f"Sent Slack notification, ts: {slack_ts}")
-
-            # 6. Store draft with the same ID used in Slack buttons
-            draft = Draft(
-                id=draft_id,
-                conversation_id=conversation.id,
-                status=DraftStatus.PENDING,
-                ai_draft=draft_result.reply,
-                slack_message_ts=slack_ts,
-                triggering_message=triggering_msg,
-                is_first_reply=is_first_reply,
-            )
-            session.add(draft)
-
-            # 7. Link prospect to conversation (if exists)
-            # Try to find by lead's LinkedIn URL from payload
+            # 4. Link prospect to conversation (if exists) - before Slack notification
+            # so we have prospect_id available for the Gift Leads button
+            prospect = None
             lead_profile_url = payload.lead.profile_url if payload.lead else None
             if lead_profile_url:
                 normalized_url = lead_profile_url.lower().strip().rstrip("/")
@@ -404,6 +371,41 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
                         prospect.first_name = parts[0]
                         prospect.last_name = parts[1] if len(parts) > 1 else None
                     logger.info(f"Linked prospect {prospect.id} to conversation {conversation.id}")
+
+            # 5. Pre-generate draft ID so Slack buttons have correct ID
+            draft_id = uuid.uuid4()
+
+            # 6. Send draft to Slack for approval (with stage indicator)
+            print("Sending to Slack...", flush=True)
+            slack_bot = SlackBot()
+            slack_ts = await slack_bot.send_draft_notification(
+                draft_id=draft_id,
+                lead_name=payload.lead_name,
+                lead_title=None,  # Not in payload
+                lead_company=payload.lead_company,
+                linkedin_url=f"https://www.linkedin.com/messaging/thread/{payload.conversation_id}",
+                lead_message=payload.latest_message,
+                ai_draft=draft_result.reply,
+                funnel_stage=draft_result.detected_stage,
+                stage_reasoning=draft_result.stage_reasoning,
+                is_first_reply=is_first_reply,
+                triggering_message=triggering_msg,
+                prospect_id=prospect.id if prospect else None,
+            )
+            print(f"Slack notification sent, ts: {slack_ts}", flush=True)
+            logger.info(f"Sent Slack notification, ts: {slack_ts}")
+
+            # 7. Store draft with the same ID used in Slack buttons
+            draft = Draft(
+                id=draft_id,
+                conversation_id=conversation.id,
+                status=DraftStatus.PENDING,
+                ai_draft=draft_result.reply,
+                slack_message_ts=slack_ts,
+                triggering_message=triggering_msg,
+                is_first_reply=is_first_reply,
+            )
+            session.add(draft)
 
             await session.commit()
 
