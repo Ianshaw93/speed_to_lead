@@ -6,9 +6,9 @@ This is part of a 3-project prospecting/outreach system:
 
 | Project | Path | Purpose |
 |---------|------|---------|
-| **speed_to_lead** | `C:\Users\IanShaw\localProgramming\smiths\speed_to_lead` | Prospecting & lead tracking |
-| **multichannel-outreach** | `C:\Users\IanShaw\localProgramming\smiths\multichannel-outreach` | Messaging & outreach automation |
-| **contentCreator** | `C:\Users\IanShaw\localProgramming\smiths\contentCreator` | Content generation |
+| **speed_to_lead** | `C:\Users\IanShaw\localProgramming\smiths\LI_cross_repo\speed_to_lead` | Prospecting & lead tracking |
+| **multichannel-outreach** | `C:\Users\IanShaw\localProgramming\smiths\LI_cross_repo\multichannel-outreach` | Messaging & outreach automation |
+| **contentCreator** | `C:\Users\IanShaw\localProgramming\smiths\LI_cross_repo\contentCreator` | Content generation |
 
 ## Project Structure
 
@@ -123,7 +123,7 @@ This project is part of a 3-repo system. Read `.claude/CROSS_REPO.md` for shared
 
 ### How to Propagate
 
-1. Update `C:\Users\IanShaw\localProgramming\smiths\CROSS_REPO.md` (canonical source)
+1. Update `C:\Users\IanShaw\localProgramming\smiths\LI_cross_repo\CROSS_REPO.md` (canonical source)
 2. Copy to all repos: `cp ../CROSS_REPO.md .claude/CROSS_REPO.md` (and siblings)
 3. If a sibling's CLAUDE.md needs project-specific updates, edit it directly
 4. Commit and push in each affected repo

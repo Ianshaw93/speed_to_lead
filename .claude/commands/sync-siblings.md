@@ -6,13 +6,13 @@ You are syncing cross-cutting knowledge across the 3 smiths projects. This comma
 
 | Project | Path | Purpose |
 |---------|------|---------|
-| **speed_to_lead** | `C:\Users\IanShaw\localProgramming\smiths\speed_to_lead` | Prospecting & lead tracking |
-| **multichannel-outreach** | `C:\Users\IanShaw\localProgramming\smiths\multichannel-outreach` | Messaging & outreach automation |
-| **contentCreator** | `C:\Users\IanShaw\localProgramming\smiths\contentCreator` | Content generation |
+| **speed_to_lead** | `C:\Users\IanShaw\localProgramming\smiths\LI_cross_repo\speed_to_lead` | Prospecting & lead tracking |
+| **multichannel-outreach** | `C:\Users\IanShaw\localProgramming\smiths\LI_cross_repo\multichannel-outreach` | Messaging & outreach automation |
+| **contentCreator** | `C:\Users\IanShaw\localProgramming\smiths\LI_cross_repo\contentCreator` | Content generation |
 
 ## Shared Files
 
-- **Canonical source**: `C:\Users\IanShaw\localProgramming\smiths\CROSS_REPO.md`
+- **Canonical source**: `C:\Users\IanShaw\localProgramming\smiths\LI_cross_repo\CROSS_REPO.md`
 - **In-repo copies**: Each repo has `.claude/CROSS_REPO.md` (committed to git, for web app access)
 
 ## Workflow
@@ -28,14 +28,14 @@ Look at recent work in the current repo. Identify anything cross-cutting:
 - Infrastructure changes (deployment, env vars, etc.)
 
 ### Step 2: Update the shared knowledge file
-Update `C:\Users\IanShaw\localProgramming\smiths\CROSS_REPO.md` with any new cross-cutting info.
+Update `C:\Users\IanShaw\localProgramming\smiths\LI_cross_repo\CROSS_REPO.md` with any new cross-cutting info.
 
 ### Step 3: Sync CROSS_REPO.md copies to all repos
 Copy the canonical `CROSS_REPO.md` to each repo's `.claude/CROSS_REPO.md`:
 ```bash
-cp "C:\Users\IanShaw\localProgramming\smiths\CROSS_REPO.md" "C:\Users\IanShaw\localProgramming\smiths\speed_to_lead\.claude\CROSS_REPO.md"
-cp "C:\Users\IanShaw\localProgramming\smiths\CROSS_REPO.md" "C:\Users\IanShaw\localProgramming\smiths\multichannel-outreach\.claude\CROSS_REPO.md"
-cp "C:\Users\IanShaw\localProgramming\smiths\CROSS_REPO.md" "C:\Users\IanShaw\localProgramming\smiths\contentCreator\.claude\CROSS_REPO.md"
+cp "C:\Users\IanShaw\localProgramming\smiths\LI_cross_repo\CROSS_REPO.md" "C:\Users\IanShaw\localProgramming\smiths\LI_cross_repo\speed_to_lead\.claude\CROSS_REPO.md"
+cp "C:\Users\IanShaw\localProgramming\smiths\LI_cross_repo\CROSS_REPO.md" "C:\Users\IanShaw\localProgramming\smiths\LI_cross_repo\multichannel-outreach\.claude\CROSS_REPO.md"
+cp "C:\Users\IanShaw\localProgramming\smiths\LI_cross_repo\CROSS_REPO.md" "C:\Users\IanShaw\localProgramming\smiths\LI_cross_repo\contentCreator\.claude\CROSS_REPO.md"
 ```
 
 ### Step 4: Update sibling CLAUDE.md files if needed
