@@ -429,15 +429,34 @@ async def _process_regenerate(draft_id: uuid.UUID, message_ts: str) -> None:
 
             conversation = draft.conversation
 
+            # Build lead_context from linked prospect
+            lead_context = None
+            if conversation.linkedin_profile_url:
+                normalized_url = conversation.linkedin_profile_url.lower().strip().rstrip("/")
+                if "?" in normalized_url:
+                    normalized_url = normalized_url.split("?")[0]
+                prospect_result = await session.execute(
+                    select(Prospect).where(Prospect.linkedin_url == normalized_url)
+                )
+                prospect = prospect_result.scalar_one_or_none()
+                if prospect:
+                    lead_context = {
+                        "company": prospect.company_name,
+                        "title": prospect.job_title,
+                        "triggering_message": draft.triggering_message,
+                        "personalized_message": prospect.personalized_message,
+                    }
+
             # Generate new AI draft
             new_draft = await generate_reply_draft(
                 lead_name=conversation.lead_name,
                 lead_message=conversation.conversation_history[-1].get("content", "") if conversation.conversation_history else "",
                 conversation_history=conversation.conversation_history or [],
+                lead_context=lead_context,
             )
 
             # Update draft in database
-            draft.ai_draft = new_draft
+            draft.ai_draft = new_draft.reply
             await session.commit()
 
             # Rebuild Slack message with new draft
@@ -448,7 +467,7 @@ async def _process_regenerate(draft_id: uuid.UUID, message_ts: str) -> None:
                 lead_company=None,
                 linkedin_url=f"https://www.linkedin.com/messaging/thread/{conversation.heyreach_lead_id}",
                 lead_message=conversation.conversation_history[-1].get("content", "") if conversation.conversation_history else "",
-                ai_draft=new_draft,
+                ai_draft=new_draft.reply,
             )
             blocks.extend(build_action_buttons(draft_id))
 

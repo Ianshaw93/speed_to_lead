@@ -38,6 +38,7 @@ try:
     from app.routers.metrics import router as metrics_router
     from app.routers.engagement import router as engagement_router
     from app.routers.changelog import router as changelog_router
+    from app.routers.pipelines import router as pipelines_router
     logger.info("Routers imported")
 except Exception as e:
     logger.error(f"Import failed: {e}", exc_info=True)
@@ -78,6 +79,7 @@ app.include_router(slack_router)
 app.include_router(metrics_router)
 app.include_router(engagement_router)
 app.include_router(changelog_router)
+app.include_router(pipelines_router)
 
 
 @app.middleware("http")
@@ -164,7 +166,11 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
 
             # Build conversation history from recent messages
             history = [
-                {"role": "lead", "content": msg.message, "time": msg.creation_time}
+                {
+                    "role": "lead" if msg.is_reply else "you",
+                    "content": msg.message,
+                    "time": msg.creation_time,
+                }
                 for msg in payload.all_recent_messages
             ]
 
@@ -230,10 +236,21 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
             # 3. Generate AI draft via DeepSeek (with stage detection)
             print(f"Generating AI draft for conversation {conversation.id}", flush=True)
             logger.info(f"Generating AI draft for conversation {conversation.id}")
+
+            # Build lead context for better AI drafts
+            lead_context = {
+                "company": payload.lead_company,
+                "title": payload.lead.position if payload.lead else None,
+                "triggering_message": triggering_msg,
+                "is_first_reply": is_first_reply,
+                "personalized_message": payload.lead.personalized_message if payload.lead else None,
+            }
+
             draft_result = await generate_reply_draft(
                 lead_name=payload.lead_name,
                 lead_message=payload.latest_message,
                 conversation_history=history,
+                lead_context=lead_context,
             )
             print(f"Detected stage: {draft_result.detected_stage.value}", flush=True)
             print(f"Generated draft: {draft_result.reply[:100]}...", flush=True)
@@ -402,7 +419,11 @@ async def process_outgoing_message(payload: HeyReachWebhookPayload) -> dict:
 
             # Build conversation history from recent messages
             history = [
-                {"role": "lead", "content": msg.message, "time": msg.creation_time}
+                {
+                    "role": "lead" if msg.is_reply else "you",
+                    "content": msg.message,
+                    "time": msg.creation_time,
+                }
                 for msg in payload.all_recent_messages
             ]
 

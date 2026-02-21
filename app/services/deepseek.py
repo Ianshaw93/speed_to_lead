@@ -59,6 +59,7 @@ class DeepSeekClient:
         lead_name: str,
         lead_message: str,
         conversation_history: list[dict] | None = None,
+        lead_context: dict | None = None,
     ) -> tuple[FunnelStage, str]:
         """Detect the funnel stage from conversation.
 
@@ -66,6 +67,7 @@ class DeepSeekClient:
             lead_name: Name of the lead.
             lead_message: The lead's most recent message.
             conversation_history: Previous messages in the conversation.
+            lead_context: Optional lead context (company, title, etc.).
 
         Returns:
             Tuple of (FunnelStage, reasoning string).
@@ -75,6 +77,7 @@ class DeepSeekClient:
                 lead_name=lead_name,
                 lead_message=lead_message,
                 conversation_history=conversation_history,
+                lead_context=lead_context,
             )
 
             messages = [
@@ -132,6 +135,7 @@ class DeepSeekClient:
         stage: FunnelStage,
         conversation_history: list[dict] | None = None,
         guidance: str | None = None,
+        lead_context: dict | None = None,
     ) -> str:
         """Generate a reply using stage-specific prompt.
 
@@ -141,6 +145,7 @@ class DeepSeekClient:
             stage: The detected funnel stage.
             conversation_history: Previous messages in the conversation.
             guidance: Optional user guidance for regeneration.
+            lead_context: Optional lead context (company, title, etc.).
 
         Returns:
             The generated reply text.
@@ -157,6 +162,7 @@ class DeepSeekClient:
                 lead_message=lead_message,
                 conversation_history=conversation_history,
                 guidance=guidance,
+                lead_context=lead_context,
             )
 
             messages = [
@@ -265,6 +271,7 @@ class DeepSeekClient:
         lead_message: str,
         conversation_history: list[dict] | None = None,
         guidance: str | None = None,
+        lead_context: dict | None = None,
     ) -> DraftResult:
         """Generate a draft reply using two-pass flow: detect stage, then generate.
 
@@ -273,6 +280,7 @@ class DeepSeekClient:
             lead_message: The lead's most recent message.
             conversation_history: Previous messages in the conversation.
             guidance: Optional user guidance for regeneration.
+            lead_context: Optional lead context (company, title, etc.).
 
         Returns:
             DraftResult with detected_stage, stage_reasoning, and reply.
@@ -285,6 +293,7 @@ class DeepSeekClient:
             lead_name=lead_name,
             lead_message=lead_message,
             conversation_history=conversation_history,
+            lead_context=lead_context,
         )
 
         # Pass 2: Generate reply using stage-specific prompt
@@ -294,6 +303,7 @@ class DeepSeekClient:
             stage=detected_stage,
             conversation_history=conversation_history,
             guidance=guidance,
+            lead_context=lead_context,
         )
 
         return DraftResult(
@@ -320,6 +330,7 @@ async def generate_reply_draft(
     lead_message: str,
     conversation_history: list[dict] | None = None,
     guidance: str | None = None,
+    lead_context: dict | None = None,
 ) -> DraftResult:
     """Convenience function to generate a reply draft with stage detection.
 
@@ -328,6 +339,7 @@ async def generate_reply_draft(
         lead_message: The lead's most recent message.
         conversation_history: Previous messages in the conversation.
         guidance: Optional user guidance for regeneration.
+        lead_context: Optional lead context (company, title, etc.).
 
     Returns:
         DraftResult with detected_stage, stage_reasoning, and reply.
@@ -338,4 +350,5 @@ async def generate_reply_draft(
         lead_message=lead_message,
         conversation_history=conversation_history,
         guidance=guidance,
+        lead_context=lead_context,
     )

@@ -1,5 +1,7 @@
 """Stage detection prompt for analyzing conversation funnel stage."""
 
+from app.prompts.utils import build_history_section, build_lead_context_section
+
 STAGE_DETECTION_SYSTEM_PROMPT = """You are an expert at analyzing LinkedIn sales conversations to determine which stage of the sales funnel they are in.
 
 ## Funnel Stages
@@ -56,6 +58,7 @@ Only use one of these exact stage names: initiated, positive_reply, pitched, cal
 
 USER_PROMPT_TEMPLATE = """## Lead Information
 **Name:** {lead_name}
+{lead_context_section}
 
 ## Conversation History
 {history_section}
@@ -70,6 +73,7 @@ def build_stage_detection_prompt(
     lead_name: str,
     lead_message: str,
     conversation_history: list[dict] | None = None,
+    lead_context: dict | None = None,
 ) -> str:
     """Build the user prompt for stage detection.
 
@@ -77,28 +81,17 @@ def build_stage_detection_prompt(
         lead_name: Name of the lead.
         lead_message: The lead's most recent message.
         conversation_history: Previous messages in the conversation.
+        lead_context: Optional lead context (company, title, etc.).
 
     Returns:
         Formatted user prompt string for stage detection.
     """
-    # Build history section
-    history_section = "No previous messages."
-    if conversation_history:
-        history_lines = []
-        for msg in conversation_history:
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")
-            time = msg.get("time", "")
-            prefix = "**Lead:**" if role == "lead" else "**You:**"
-            if time:
-                history_lines.append(f"{prefix} [{time}] {content}")
-            else:
-                history_lines.append(f"{prefix} {content}")
-        if history_lines:
-            history_section = "\n".join(history_lines)
+    history_section = build_history_section(conversation_history)
+    lead_context_section = build_lead_context_section(lead_context)
 
     return USER_PROMPT_TEMPLATE.format(
         lead_name=lead_name,
         lead_message=lead_message,
         history_section=history_section,
+        lead_context_section=lead_context_section,
     )

@@ -442,3 +442,37 @@ class TestGenerateReplyDraft:
             assert isinstance(result, DraftResult)
             assert result.reply == "Generated reply"
             mock_client.generate_draft.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_generate_reply_draft_passes_lead_context(self):
+        """Should pass lead_context through to generate_draft."""
+        with patch("app.services.deepseek.get_deepseek_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.generate_draft.return_value = DraftResult(
+                detected_stage=FunnelStage.POSITIVE_REPLY,
+                stage_reasoning="Interest shown",
+                reply="Contextual reply",
+            )
+            mock_get_client.return_value = mock_client
+
+            lead_context = {
+                "company": "TestCorp",
+                "title": "CEO",
+                "triggering_message": "Hey, saw your post",
+            }
+
+            result = await generate_reply_draft(
+                lead_name="Test Lead",
+                lead_message="Test message",
+                conversation_history=[],
+                lead_context=lead_context,
+            )
+
+            assert result.reply == "Contextual reply"
+            mock_client.generate_draft.assert_called_once_with(
+                lead_name="Test Lead",
+                lead_message="Test message",
+                conversation_history=[],
+                guidance=None,
+                lead_context=lead_context,
+            )

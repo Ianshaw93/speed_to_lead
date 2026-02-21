@@ -1,5 +1,7 @@
 """Prompt for regeneration stage - re-engaging after drop-off."""
 
+from app.prompts.utils import build_history_section, build_lead_context_section
+
 SYSTEM_PROMPT = """You are a professional LinkedIn sales assistant. This conversation went cold - the lead stopped responding after previous exchanges. You're re-engaging them.
 
 ## Your Goal
@@ -35,6 +37,7 @@ Draft a re-engagement message that leads with value."""
 
 USER_PROMPT_TEMPLATE = """## Lead Information
 **Name:** {lead_name}
+{lead_context_section}
 
 ## Conversation History
 {history_section}
@@ -55,6 +58,7 @@ def build_user_prompt(
     lead_message: str,
     conversation_history: list[dict] | None = None,
     guidance: str | None = None,
+    lead_context: dict | None = None,
 ) -> str:
     """Build the user prompt for regeneration stage.
 
@@ -63,27 +67,14 @@ def build_user_prompt(
         lead_message: The lead's most recent (or last known) message.
         conversation_history: Previous messages in the conversation.
         guidance: Optional user guidance for regeneration.
+        lead_context: Optional lead context (company, title, etc.).
 
     Returns:
         Formatted user prompt string.
     """
-    # Build history section
-    history_section = "No previous messages."
-    if conversation_history:
-        history_lines = []
-        for msg in conversation_history:
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")
-            time = msg.get("time", "")
-            prefix = "**Lead:**" if role == "lead" else "**You:**"
-            if time:
-                history_lines.append(f"{prefix} [{time}] {content}")
-            else:
-                history_lines.append(f"{prefix} {content}")
-        if history_lines:
-            history_section = "\n".join(history_lines)
+    history_section = build_history_section(conversation_history)
+    lead_context_section = build_lead_context_section(lead_context)
 
-    # Build guidance section
     guidance_section = ""
     if guidance:
         guidance_section = f"\n## Additional Guidance\n{guidance}"
@@ -92,5 +83,6 @@ def build_user_prompt(
         lead_name=lead_name,
         lead_message=lead_message,
         history_section=history_section,
+        lead_context_section=lead_context_section,
         guidance_section=guidance_section,
     )

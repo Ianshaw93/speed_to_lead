@@ -1,5 +1,7 @@
 """Prompt for booked stage - they've booked a meeting time."""
 
+from app.prompts.utils import build_history_section, build_lead_context_section
+
 SYSTEM_PROMPT = """You are a professional LinkedIn sales assistant. The lead has booked a meeting time on your calendar. They're reaching out about the upcoming meeting.
 
 ## Your Goal
@@ -13,10 +15,10 @@ Confirm the meeting and set them up for a productive conversation. Reduce no-sho
 - Make them feel good about their decision to meet
 
 ## Common Scenarios
-- **"Booked for [time]!"** → Confirm, express excitement, optional prep share
-- **"Need to reschedule"** → Gracious, offer alternatives, no guilt
-- **Questions about the meeting** → Answer helpfully, reassure them of value
-- **"Looking forward to it"** → Match energy, confirm details
+- **"Booked for [time]!"** -> Confirm, express excitement, optional prep share
+- **"Need to reschedule"** -> Gracious, offer alternatives, no guilt
+- **Questions about the meeting** -> Answer helpfully, reassure them of value
+- **"Looking forward to it"** -> Match energy, confirm details
 
 ## What NOT to Do
 - Don't overwhelm with information
@@ -31,6 +33,7 @@ Draft a reply that confirms and sets positive expectations for the meeting."""
 
 USER_PROMPT_TEMPLATE = """## Lead Information
 **Name:** {lead_name}
+{lead_context_section}
 
 ## Conversation History
 {history_section}
@@ -48,6 +51,7 @@ def build_user_prompt(
     lead_message: str,
     conversation_history: list[dict] | None = None,
     guidance: str | None = None,
+    lead_context: dict | None = None,
 ) -> str:
     """Build the user prompt for booked stage.
 
@@ -56,27 +60,14 @@ def build_user_prompt(
         lead_message: The lead's most recent message.
         conversation_history: Previous messages in the conversation.
         guidance: Optional user guidance for regeneration.
+        lead_context: Optional lead context (company, title, etc.).
 
     Returns:
         Formatted user prompt string.
     """
-    # Build history section
-    history_section = "No previous messages."
-    if conversation_history:
-        history_lines = []
-        for msg in conversation_history:
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")
-            time = msg.get("time", "")
-            prefix = "**Lead:**" if role == "lead" else "**You:**"
-            if time:
-                history_lines.append(f"{prefix} [{time}] {content}")
-            else:
-                history_lines.append(f"{prefix} {content}")
-        if history_lines:
-            history_section = "\n".join(history_lines)
+    history_section = build_history_section(conversation_history)
+    lead_context_section = build_lead_context_section(lead_context)
 
-    # Build guidance section
     guidance_section = ""
     if guidance:
         guidance_section = f"\n## Additional Guidance\n{guidance}"
@@ -85,5 +76,6 @@ def build_user_prompt(
         lead_name=lead_name,
         lead_message=lead_message,
         history_section=history_section,
+        lead_context_section=lead_context_section,
         guidance_section=guidance_section,
     )
