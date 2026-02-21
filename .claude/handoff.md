@@ -139,4 +139,5 @@ WHERE d.status = 'approved' ORDER BY d.created_at DESC;
 | 1 | **AI draft quality** | In progress (separate instance) |
 | 2 | **Content — 5 posts/week** | Standard going forward (was 2/wk last week) |
 | 3 | **Engagement/commenting** | Next engineering focus after drafts ship |
-| 4 | Lead magnets | Deferred — top-of-funnel, doesn't fix the leak |
+| 4 | **A/B test initial messages** | High-leverage once reply pipeline is flowing — test different openers, tones, hooks to lift reply rate and positive reply quality |
+| 5 | Lead magnets | Deferred — top-of-funnel, doesn't fix the leak |
