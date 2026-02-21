@@ -158,6 +158,7 @@ async def backfill_history_roles(request: Request) -> dict:
             conversations = result.scalars().all()
 
             fixed = 0
+            rebuilt_count = 0
             skipped = 0
             already_correct = 0
 
@@ -207,13 +208,26 @@ async def backfill_history_roles(request: Request) -> dict:
                     conv.conversation_history = new_history
                     fixed += 1
                 else:
-                    skipped += 1
+                    # Content matching didn't work — rebuild history
+                    # entirely from MessageLog (which has correct direction)
+                    sorted_logs = sorted(msg_logs, key=lambda ml: ml.sent_at)
+                    rebuilt = [
+                        {
+                            "role": "lead" if ml.direction == MessageDirection.INBOUND else "you",
+                            "content": ml.content,
+                            "time": ml.sent_at.isoformat() if ml.sent_at else "",
+                        }
+                        for ml in sorted_logs
+                    ]
+                    conv.conversation_history = rebuilt
+                    rebuilt_count += 1
 
             await session.commit()
 
             return {
                 "status": "ok",
                 "fixed": fixed,
+                "rebuilt_from_message_log": rebuilt_count,
                 "already_correct": already_correct,
                 "skipped": skipped,
                 "total": len(conversations),
