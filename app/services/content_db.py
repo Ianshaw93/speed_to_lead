@@ -91,13 +91,17 @@ def save_trending_topic(
         Dict representation of the saved row.
     """
     now = datetime.now().isoformat()
+    entry_id = str(uuid.uuid4())[:8]
+    src_urls = source_urls or []
+    angles = content_angles or []
+
     entry = TrendingTopic(
-        id=str(uuid.uuid4())[:8],
+        id=entry_id,
         topic=topic,
         summary=summary,
-        source_urls=source_urls or [],
+        source_urls=src_urls,
         relevance_score=relevance_score,
-        content_angles=content_angles or [],
+        content_angles=angles,
         search_query=search_query,
         batch_id=batch_id,
         status="new",
@@ -118,17 +122,18 @@ def save_trending_topic(
     finally:
         session.close()
 
+    # Build return dict from known values (not the detached ORM object)
     return {
-        "id": entry.id,
-        "topic": entry.topic,
-        "summary": entry.summary,
-        "source_urls": entry.source_urls,
-        "relevance_score": entry.relevance_score,
-        "content_angles": entry.content_angles,
-        "search_query": entry.search_query,
-        "batch_id": entry.batch_id,
-        "status": entry.status,
-        "source_platform": entry.source_platform,
-        "created_at": entry.created_at,
-        "updated_at": entry.updated_at,
+        "id": entry_id,
+        "topic": topic,
+        "summary": summary,
+        "source_urls": src_urls,
+        "relevance_score": relevance_score,
+        "content_angles": angles,
+        "search_query": search_query,
+        "batch_id": batch_id,
+        "status": "new",
+        "source_platform": source_platform,
+        "created_at": now,
+        "updated_at": now,
     }
