@@ -14,6 +14,9 @@ os.environ.setdefault("APIFY_API_TOKEN", "test_apify_token")
 os.environ.setdefault("SLACK_ENGAGEMENT_CHANNEL_ID", "C_TEST_ENGAGEMENT")
 os.environ.setdefault("SECRET_KEY", "test_secret_key_for_testing")
 os.environ.setdefault("ENVIRONMENT", "testing")
+os.environ.setdefault("CONTENT_DB_URL", "")
+os.environ.setdefault("PERPLEXITY_API_KEY", "test_perplexity_key")
+os.environ.setdefault("ANTHROPIC_API_KEY", "test_anthropic_key")
 
 from typing import AsyncGenerator
 

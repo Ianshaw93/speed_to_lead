@@ -618,6 +618,64 @@ CATEGORY_DISPLAY = {
 }
 
 
+def build_trend_scout_report_blocks(
+    result: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Build Slack Block Kit message for trend scout report.
+
+    Args:
+        result: Summary dict from run_trend_scout_task() with
+            batch_id, topics_found, topics_saved, topics.
+
+    Returns:
+        List of Slack Block Kit blocks.
+    """
+    batch_id = result.get("batch_id", "?")
+    found = result.get("topics_found", 0)
+    saved = result.get("topics_saved", 0)
+    topics = result.get("topics", [])
+
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": "Trend Scout Report",
+                "emoji": True,
+            },
+        },
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Topics found:* {found}"},
+                {"type": "mrkdwn", "text": f"*Topics saved:* {saved}"},
+            ],
+        },
+    ]
+
+    # Top topics (up to 5)
+    if topics:
+        top = sorted(topics, key=lambda t: t.get("relevance_score", 0), reverse=True)[:5]
+        lines = []
+        for t in top:
+            score = t.get("relevance_score", "?")
+            platform = t.get("source_platform", "?")
+            lines.append(f"[{score}/10] *{t.get('topic', '?')}* ({platform})")
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*Top Topics:*\n" + "\n".join(lines)},
+        })
+
+    blocks.append({
+        "type": "context",
+        "elements": [
+            {"type": "mrkdwn", "text": f"Batch: `{batch_id}`"},
+        ],
+    })
+
+    return blocks
+
+
 def build_pitched_card_blocks(
     lead_name: str,
     lead_title: str | None,
@@ -1942,6 +2000,34 @@ class SlackBot:
             raise SlackError(f"Failed to send weekly report: {e.response['error']}") from e
         except Exception as e:
             raise SlackError(f"Failed to send weekly report: {e}") from e
+
+    async def send_trend_scout_report(
+        self,
+        result: dict[str, Any],
+    ) -> str:
+        """Send trend scout report to Slack metrics channel.
+
+        Args:
+            result: Summary dict from run_trend_scout_task().
+
+        Returns:
+            The Slack message timestamp.
+
+        Raises:
+            SlackError: If sending fails.
+        """
+        try:
+            blocks = build_trend_scout_report_blocks(result)
+            response = await self._client.chat_postMessage(
+                channel=self._metrics_channel_id,
+                blocks=blocks,
+                text=f"Trend Scout: {result.get('topics_saved', 0)} topics saved",
+            )
+            return response["ts"]
+        except SlackApiError as e:
+            raise SlackError(f"Failed to send trend scout report: {e.response['error']}") from e
+        except Exception as e:
+            raise SlackError(f"Failed to send trend scout report: {e}") from e
 
     async def send_engagement_notification(
         self,

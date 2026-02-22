@@ -35,6 +35,13 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = "sqlite+aiosqlite:///./speed_to_lead.db"
+    content_db_url: str = ""  # contentCreator's Postgres (for trend scout)
+
+    # Perplexity (for trend scout)
+    perplexity_api_key: str = ""
+
+    # Anthropic (for trend scout ICP scoring)
+    anthropic_api_key: str = ""
 
     # App
     secret_key: str = "change-me-in-production"

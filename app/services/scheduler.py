@@ -122,6 +122,26 @@ async def check_engagement_task() -> None:
         logger.error(f"Failed to run engagement check: {e}", exc_info=True)
 
 
+async def run_trend_scout_scheduled_task() -> None:
+    """Run trend scout discovery. Called by scheduler on Saturday 7am UK time."""
+    import logging
+    from app.services.trend_scout import run_trend_scout_task
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        result = await run_trend_scout_task()
+        logger.info(f"Trend scout completed: {result['topics_saved']} topics saved (batch={result['batch_id']})")
+    except Exception as e:
+        logger.error(f"Failed to run trend scout: {e}", exc_info=True)
+        try:
+            from app.services.slack import get_slack_bot
+            bot = get_slack_bot()
+            await bot.send_confirmation(f"*Trend Scout FAILED*\nError: {e}")
+        except Exception:
+            pass
+
+
 async def send_weekly_report_task() -> None:
     """Send weekly metrics report. Called by scheduler on Monday 9am UK time."""
     import logging
@@ -329,6 +349,21 @@ class SchedulerService:
             name='Weekly metrics report',
             replace_existing=True,
             misfire_grace_time=3600,  # 1 hour grace
+        )
+
+        # Trend scout on Saturday 7am UK time
+        self._scheduler.add_job(
+            run_trend_scout_scheduled_task,
+            trigger=CronTrigger(
+                day_of_week='sat',
+                hour=7,
+                minute=0,
+                timezone='Europe/London',
+            ),
+            id='trend_scout_weekly',
+            name='Weekly trend scout scan',
+            replace_existing=True,
+            misfire_grace_time=3600,
         )
 
     def shutdown(self, wait: bool = True) -> None:

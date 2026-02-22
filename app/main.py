@@ -1524,6 +1524,28 @@ async def receive_buying_signal(request: Request) -> dict:
     return {"status": "created", "received_at": received_at, "linkedin_url": linkedin_url}
 
 
+@app.post("/api/trend-scout/run")
+async def trigger_trend_scout(
+    background_tasks: BackgroundTasks,
+) -> dict:
+    """Manually trigger trend scout discovery.
+
+    Runs the full Perplexity + Claude pipeline in the background.
+    Results are saved to contentCreator's DB and reported via Slack.
+    """
+    from app.services.trend_scout import run_trend_scout_task
+
+    async def _run():
+        try:
+            result = await run_trend_scout_task()
+            logger.info(f"Manual trend scout result: {result}")
+        except Exception as e:
+            logger.error(f"Manual trend scout failed: {e}", exc_info=True)
+
+    background_tasks.add_task(_run)
+    return {"status": "processing", "message": "Trend scout triggered"}
+
+
 @app.post("/buying-signal/process")
 async def trigger_buying_signal_outreach(
     request: Request,
