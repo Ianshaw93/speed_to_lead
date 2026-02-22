@@ -395,13 +395,26 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
             is_first_reply = inbound_count == 0
             logger.info(f"First reply detection: inbound_count={inbound_count}, is_first_reply={is_first_reply}")
 
-            # 2.5. Log the inbound message
-            message_log = MessageLog(
-                conversation_id=conversation.id,
-                direction=MessageDirection.INBOUND,
-                content=payload.latest_message,
+            # 2.5. Log the inbound message (with dedup)
+            from sqlalchemy import and_
+            existing_inbound = await session.execute(
+                select(MessageLog).where(
+                    and_(
+                        MessageLog.conversation_id == conversation.id,
+                        MessageLog.direction == MessageDirection.INBOUND,
+                        MessageLog.content == payload.latest_message,
+                    )
+                )
             )
-            session.add(message_log)
+            if not existing_inbound.scalar_one_or_none():
+                message_log = MessageLog(
+                    conversation_id=conversation.id,
+                    direction=MessageDirection.INBOUND,
+                    content=payload.latest_message,
+                )
+                session.add(message_log)
+            else:
+                logger.info(f"Skipped duplicate inbound message for conversation {conversation.id}")
 
             # 2.6. Check if prospect should be removed from follow-up list
             # (if they replied within 24h of being added)
@@ -631,8 +644,6 @@ async def process_outgoing_message(payload: HeyReachWebhookPayload) -> dict:
             # This captures the full conversation as a safety net
             campaign_id = payload.campaign.id if payload.campaign else None
             campaign_name = payload.campaign.name if payload.campaign else None
-            now = datetime.now(timezone.utc)
-            dedup_window = timedelta(minutes=5)
 
             created = 0
             deduped = 0
@@ -645,13 +656,13 @@ async def process_outgoing_message(payload: HeyReachWebhookPayload) -> dict:
                 direction = MessageDirection.INBOUND if msg.is_reply else MessageDirection.OUTBOUND
 
                 # Dedup: check for existing message with same content + direction + conversation
+                # No time window — replayed webhooks with old messages must still be caught
                 existing_result = await session.execute(
                     select(MessageLog).where(
                         and_(
                             MessageLog.conversation_id == conversation.id,
                             MessageLog.direction == direction,
                             MessageLog.content == msg.message,
-                            MessageLog.sent_at >= now - dedup_window,
                         )
                     )
                 )
@@ -1895,6 +1906,82 @@ async def message_effectiveness(limit: int = 50) -> dict:
             "total": len(items),
             "positive_count": positive_count,
             "items": items,
+        }
+
+
+@app.get("/admin/verify-reply-capture")
+async def verify_reply_capture(hours: int = 48) -> dict:
+    """Verify fresh replies are being captured in message_log.
+
+    Checks for new messages, duplicates, and staleness.
+    Designed to be called as a cron job for pipeline health monitoring.
+
+    Query params:
+        hours: Check window in hours (default 48).
+    """
+    from sqlalchemy import func, text
+
+    async with async_session_factory() as session:
+        # Total counts
+        total_msgs = (await session.execute(
+            select(func.count(MessageLog.id))
+        )).scalar()
+        recent_msgs = (await session.execute(
+            select(func.count(MessageLog.id)).where(
+                MessageLog.sent_at >= text(f"NOW() - INTERVAL '{hours} hours'")
+            )
+        )).scalar()
+        recent_inbound = (await session.execute(
+            select(func.count(MessageLog.id)).where(
+                MessageLog.sent_at >= text(f"NOW() - INTERVAL '{hours} hours'"),
+                MessageLog.direction == MessageDirection.INBOUND,
+            )
+        )).scalar()
+
+        # Duplicate check
+        dupe_query = text(f"""
+            SELECT COUNT(*) FROM (
+                SELECT conversation_id, direction, content
+                FROM message_log
+                WHERE sent_at >= NOW() - INTERVAL '{hours} hours'
+                GROUP BY conversation_id, direction, content
+                HAVING COUNT(*) > 1
+            ) dupes
+        """)
+        dupe_count = (await session.execute(dupe_query)).scalar()
+
+        # Latest message time
+        latest = (await session.execute(
+            select(func.max(MessageLog.sent_at))
+        )).scalar()
+        hours_since_latest = None
+        if latest:
+            from datetime import datetime, timezone
+            hours_since_latest = round(
+                (datetime.now(timezone.utc) - latest).total_seconds() / 3600, 1
+            )
+
+        status = "PASS"
+        warnings = []
+        if recent_msgs == 0:
+            status = "WARN"
+            warnings.append(f"No messages in last {hours}h")
+        if dupe_count > 0:
+            status = "WARN"
+            warnings.append(f"{dupe_count} duplicate groups found")
+        if hours_since_latest and hours_since_latest > 12:
+            status = "WARN"
+            warnings.append(f"Last message was {hours_since_latest}h ago")
+
+        return {
+            "status": status,
+            "window_hours": hours,
+            "total_messages": total_msgs,
+            "recent_messages": recent_msgs,
+            "recent_inbound": recent_inbound,
+            "duplicates": dupe_count,
+            "hours_since_latest_message": hours_since_latest,
+            "warnings": warnings,
         }
 
 
