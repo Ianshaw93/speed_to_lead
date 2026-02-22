@@ -107,6 +107,14 @@ Use Railway MCP server for:
 
 See `.claude/strategy.md` for current priorities, funnel numbers, and the full list of levers to pull (ordered by impact). Updated 2026-02-21.
 
+## Cost Tracking
+
+**This repo owns the cost tracking database.** All 3 repos must log costs for any paid action (API calls, Apify, LLM tokens, etc.) to this DB.
+
+- `PipelineRun` already tracks prospecting pipeline costs
+- A generic `CostLog` table should be created (via Alembic migration) when first needed by a non-pipeline cost
+- Required fields: source repo, action name, service, cost amount, timestamp
+
 ## Cross-Repo Knowledge Sharing
 
 This project is part of a 3-repo system. Read `.claude/CROSS_REPO.md` for shared context (endpoints, data flows, conventions).

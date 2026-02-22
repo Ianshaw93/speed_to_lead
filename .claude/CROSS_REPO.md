@@ -57,6 +57,17 @@ Enum: `FunnelStage` (POSITIVE_REPLY, PITCHED, CALENDAR_SENT, BOOKED)
 3. **contentCreator** generates content → drafts stored in DB → can be used for outreach messaging
 4. **Buying signals** (from Gojiberry webhook) → stored on prospects → influence message personalization in **multichannel-outreach**
 
+## Cost Tracking
+
+**All actions that incur a cost (API calls, Apify runs, LLM tokens, etc.) MUST be logged to the speed_to_lead database.**
+
+- **Existing model**: `PipelineRun` in `speed_to_lead/app/models.py` tracks prospecting pipeline costs
+- **For non-pipeline costs** (e.g. contentCreator AI generation, multichannel-outreach Apify scraping): log to a generic `CostLog` table (to be created in speed_to_lead when first needed)
+- **Required fields**: source repo, action name, service (apify/openai/anthropic/perplexity/etc.), cost amount, timestamp
+- **Why**: Visibility into total spend across the system. No action that costs money should be invisible.
+
+This applies to all 3 repos. When writing or modifying scripts that call paid APIs, ensure cost is captured and logged.
+
 ## Shared Conventions
 
 - **Railway CLI in Git Bash**: Always use `cmd.exe /c "railway ..."` wrapper
