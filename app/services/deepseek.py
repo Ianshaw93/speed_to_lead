@@ -1,7 +1,8 @@
 """DeepSeek AI client for generating LinkedIn reply drafts with stage detection."""
 
 import json
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, field
 
 from openai import AsyncOpenAI
 
@@ -17,6 +18,8 @@ from app.prompts.stage_detector import (
 )
 from app.prompts.stages import get_stage_prompt
 
+logger = logging.getLogger(__name__)
+
 
 class DeepSeekError(Exception):
     """Custom exception for DeepSeek API errors."""
@@ -31,6 +34,9 @@ class DraftResult:
     detected_stage: FunnelStage
     stage_reasoning: str
     reply: str
+    judge_score: float | None = None
+    judge_feedback: str | None = None
+    revision_count: int = 0
 
 
 class DeepSeekClient:
@@ -352,3 +358,100 @@ async def generate_reply_draft(
         guidance=guidance,
         lead_context=lead_context,
     )
+
+
+async def generate_reply_draft_with_judgment(
+    lead_name: str,
+    lead_message: str,
+    conversation_history: list[dict] | None = None,
+    lead_context: dict | None = None,
+) -> DraftResult:
+    """Generate a reply draft with Claude Sonnet judge loop.
+
+    Flow: DeepSeek drafts -> Sonnet judges -> if score < 4.0, revise once -> return best.
+    Falls back to unjudged draft if Anthropic API fails.
+
+    Args:
+        lead_name: Name of the lead.
+        lead_message: The lead's most recent message.
+        conversation_history: Previous messages in the conversation.
+        lead_context: Optional lead context (company, title, etc.).
+
+    Returns:
+        DraftResult with judge_score, judge_feedback, and revision_count populated.
+    """
+    from app.services.judge import (
+        JudgeError,
+        MAX_REVISIONS,
+        SCORE_THRESHOLD,
+        judge_draft,
+    )
+
+    client = get_deepseek_client()
+
+    # Step 1: Generate initial draft
+    draft_result = await client.generate_draft(
+        lead_name=lead_name,
+        lead_message=lead_message,
+        conversation_history=conversation_history,
+        lead_context=lead_context,
+    )
+
+    # Step 2: Judge the draft
+    try:
+        judge_result = await judge_draft(
+            lead_name=lead_name,
+            lead_message=lead_message,
+            ai_draft=draft_result.reply,
+            conversation_history=conversation_history,
+            lead_context=lead_context,
+        )
+    except JudgeError as e:
+        logger.warning(f"Judge failed, returning unjudged draft: {e}")
+        return draft_result
+
+    best = draft_result
+    best.judge_score = judge_result.weighted_score
+    best.judge_feedback = judge_result.feedback
+
+    # Step 3: Revise if below threshold
+    if judge_result.weighted_score < SCORE_THRESHOLD and best.revision_count < MAX_REVISIONS:
+        logger.info(
+            f"Draft scored {judge_result.weighted_score:.2f} < {SCORE_THRESHOLD}, "
+            f"revising with feedback: {judge_result.feedback[:100]}"
+        )
+
+        # Use judge feedback as guidance for revision
+        revised_reply = await client.generate_with_stage(
+            lead_name=lead_name,
+            lead_message=lead_message,
+            stage=draft_result.detected_stage,
+            conversation_history=conversation_history,
+            guidance=judge_result.feedback,
+            lead_context=lead_context,
+        )
+
+        # Re-judge the revision
+        try:
+            revised_judge = await judge_draft(
+                lead_name=lead_name,
+                lead_message=lead_message,
+                ai_draft=revised_reply,
+                conversation_history=conversation_history,
+                lead_context=lead_context,
+            )
+
+            # Keep whichever version scored higher
+            if revised_judge.weighted_score >= judge_result.weighted_score:
+                best.reply = revised_reply
+                best.judge_score = revised_judge.weighted_score
+                best.judge_feedback = revised_judge.feedback
+            best.revision_count = 1
+
+        except JudgeError as e:
+            # Re-judge failed — keep revised reply but with original score
+            logger.warning(f"Re-judge failed, keeping revised draft: {e}")
+            best.reply = revised_reply
+            best.revision_count = 1
+
+    return best

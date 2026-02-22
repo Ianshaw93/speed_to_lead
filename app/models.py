@@ -6,7 +6,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Boolean, JSON, Date, DateTime, Enum, ForeignKey, Numeric, String, Text
+from sqlalchemy import Boolean, Integer, JSON, Date, DateTime, Enum, ForeignKey, Numeric, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -169,6 +169,10 @@ class Draft(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    # Judge quality scoring
+    judge_score: Mapped[float | None] = mapped_column(Numeric(3, 2), nullable=True)
+    judge_feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revision_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -179,8 +183,18 @@ class Draft(Base):
         onupdate=lambda: datetime.now(timezone.utc),
     )
 
+    # QA audit trail
+    original_ai_draft: Mapped[str | None] = mapped_column(Text, nullable=True)
+    human_edited_draft: Mapped[str | None] = mapped_column(Text, nullable=True)
+    qa_score: Mapped[Decimal | None] = mapped_column(Numeric(3, 1), nullable=True)
+    qa_verdict: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    qa_issues: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    qa_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    qa_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(10, 6), nullable=True)
+
     # Relationships
     conversation: Mapped["Conversation"] = relationship(back_populates="drafts")
+    learnings: Mapped[list["DraftLearning"]] = relationship(back_populates="draft")
 
 
 class MessageLog(Base):
@@ -620,6 +634,115 @@ class Changelog(Base):
     description: Mapped[str] = mapped_column(Text)
     details: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)  # structured metadata
     git_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class LearningType(str, enum.Enum):
+    """Type of draft learning."""
+
+    TONE = "tone"
+    CONTENT = "content"
+    STRUCTURE = "structure"
+    SKIP_DETECTION = "skip_detection"
+    PRODUCT_KNOWLEDGE = "product_knowledge"
+
+
+class GuidelineType(str, enum.Enum):
+    """Type of QA guideline."""
+
+    DO = "do"
+    DONT = "dont"
+    EXAMPLE = "example"
+    TONE_RULE = "tone_rule"
+
+
+class DraftLearning(Base):
+    """A learning extracted from human edits to AI drafts."""
+
+    __tablename__ = "draft_learnings"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    draft_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("drafts.id"), index=True
+    )
+    learning_type: Mapped[LearningType] = mapped_column(
+        Enum(
+            LearningType,
+            name="learning_type",
+            values_callable=lambda x: [e.value for e in x],
+        ),
+    )
+    original_text: Mapped[str] = mapped_column(Text)
+    corrected_text: Mapped[str] = mapped_column(Text)
+    diff_summary: Mapped[str] = mapped_column(Text)
+    stage: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    confidence: Mapped[Decimal] = mapped_column(Numeric(3, 2), default=Decimal("0.5"))
+    applied_to_prompt: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    # Relationships
+    draft: Mapped["Draft"] = relationship(back_populates="learnings")
+
+
+class QAGuideline(Base):
+    """A QA guideline learned from human corrections, used by the QA agent."""
+
+    __tablename__ = "qa_guidelines"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    stage: Mapped[str] = mapped_column(String(50), index=True)  # funnel stage or "all"
+    guideline_type: Mapped[GuidelineType] = mapped_column(
+        Enum(
+            GuidelineType,
+            name="guideline_type",
+            values_callable=lambda x: [e.value for e in x],
+        ),
+    )
+    content: Mapped[str] = mapped_column(Text)
+    source_learning_ids: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON, nullable=True
+    )  # JSON array of learning UUIDs
+    occurrences: Mapped[int] = mapped_column(default=1)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class CostLog(Base):
+    """Append-only cost ledger for all paid API calls across all 3 repos."""
+
+    __tablename__ = "cost_log"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    incurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    project: Mapped[str] = mapped_column(String(50), index=True)
+    provider: Mapped[str] = mapped_column(String(50), index=True)
+    operation: Mapped[str] = mapped_column(String(100))
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(10, 6))
+    units: Mapped[int | None] = mapped_column(nullable=True)
+    unit_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    pipeline_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("pipeline_runs.id"), nullable=True, index=True
+    )
+    daily_metrics_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("daily_metrics.id"), nullable=True
+    )
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

@@ -255,6 +255,53 @@ def build_classification_buttons(
     ]
 
 
+def build_qa_annotation(
+    qa_score: float,
+    qa_verdict: str | None = None,
+    qa_issues: list[dict] | None = None,
+) -> list[dict[str, Any]]:
+    """Build QA annotation blocks for the Slack message.
+
+    Args:
+        qa_score: QA score (1.0-5.0).
+        qa_verdict: pass/flag/block.
+        qa_issues: List of issue dicts.
+
+    Returns:
+        Slack blocks showing QA status.
+    """
+    # Choose badge based on score
+    if qa_score >= 4.0:
+        badge = f":large_green_circle: QA Pass ({qa_score:.1f}/5)"
+    elif qa_score >= 3.0:
+        badge = f":large_yellow_circle: QA Flag ({qa_score:.1f}/5)"
+    else:
+        badge = f":red_circle: QA Block ({qa_score:.1f}/5)"
+
+    blocks: list[dict[str, Any]] = [
+        {"type": "divider"},
+        {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": badge}],
+        },
+    ]
+
+    # Add issue details for flagged drafts
+    if qa_issues and qa_score < 4.0:
+        issue_lines = []
+        for issue in qa_issues[:3]:  # Max 3 issues shown
+            severity = issue.get("severity", "medium")
+            icon = ":warning:" if severity == "high" else ":information_source:"
+            issue_lines.append(f"{icon} {issue.get('type', 'issue')}: {issue.get('detail', '')}")
+        if issue_lines:
+            blocks.append({
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": "\n".join(issue_lines)}],
+            })
+
+    return blocks
+
+
 def build_action_buttons(draft_id: uuid.UUID) -> list[dict[str, Any]]:
     """Build action buttons for the draft message.
 
