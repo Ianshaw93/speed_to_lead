@@ -68,6 +68,17 @@ Enum: `FunnelStage` (POSITIVE_REPLY, PITCHED, CALENDAR_SENT, BOOKED)
 
 This applies to all 3 repos. When writing or modifying scripts that call paid APIs, ensure cost is captured and logged.
 
+## Health Check System
+
+Production health checks run 2x/day (10am, 3pm UK) in the speed_to_lead service, querying the DB for liveness signals.
+
+- **Code**: `speed_to_lead/app/services/health_check.py`
+- **Directive**: `multichannel-outreach/directives/health_check_system.md`
+- **Endpoints**: `POST /admin/health-check` (auth), `GET /admin/health-check/status` (no auth)
+- **Adding a check**: Add an `async def check_<name>(session) -> CheckResult` function + add to `ALL_CHECKS` list + write tests
+
+**After completing work that introduces a new data flow or integration, assess whether a health check should be added.** If the feature has data that should appear regularly when working (liveness signal), add a check. Examples: new webhook, scheduled task, external service, pipeline writing to DB.
+
 ## Shared Conventions
 
 - **Railway CLI in Git Bash**: Always use `cmd.exe /c "railway ..."` wrapper

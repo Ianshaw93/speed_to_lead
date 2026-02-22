@@ -115,6 +115,10 @@ See `.claude/strategy.md` for current priorities, funnel numbers, and the full l
 - A generic `CostLog` table should be created (via Alembic migration) when first needed by a non-pipeline cost
 - Required fields: source repo, action name, service, cost amount, timestamp
 
+## Health Check System
+
+Production health checks run 2x/day (10am, 3pm UK). Code in `app/services/health_check.py`. After completing any feature that creates a new data flow, assess whether a health check should be added. See `multichannel-outreach/directives/health_check_system.md` for full instructions.
+
 ## Cross-Repo Knowledge Sharing
 
 This project is part of a 3-repo system. Read `.claude/CROSS_REPO.md` for shared context (endpoints, data flows, conventions).

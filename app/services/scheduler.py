@@ -142,6 +142,33 @@ async def run_trend_scout_scheduled_task() -> None:
             pass
 
 
+async def run_health_check_task() -> None:
+    """Run production health checks. Called by scheduler at 10am and 3pm UK time."""
+    import logging
+    from app.database import async_session_factory
+    from app.services.health_check import CheckStatus, run_health_check
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        async with async_session_factory() as session:
+            report = await run_health_check(session)
+
+        logger.info(
+            f"Health check completed: {report.status.value} "
+            f"({report.passing}/{len(report.checks)} passing)"
+        )
+
+        if report.status != CheckStatus.OK:
+            from app.services.slack import get_slack_bot
+            bot = get_slack_bot()
+            await bot.send_health_check_alert(report)
+            logger.info("Health check alert sent to Slack")
+
+    except Exception as e:
+        logger.error(f"Failed to run health check: {e}", exc_info=True)
+
+
 async def send_weekly_report_task() -> None:
     """Send weekly metrics report. Called by scheduler on Monday 9am UK time."""
     import logging
@@ -349,6 +376,20 @@ class SchedulerService:
             name='Weekly metrics report',
             replace_existing=True,
             misfire_grace_time=3600,  # 1 hour grace
+        )
+
+        # Health check at 10am and 3pm UK time
+        self._scheduler.add_job(
+            run_health_check_task,
+            trigger=CronTrigger(
+                hour='10,15',
+                minute=0,
+                timezone='Europe/London',
+            ),
+            id='health_check',
+            name='Production health check',
+            replace_existing=True,
+            misfire_grace_time=3600,
         )
 
         # Trend scout on Saturday 7am UK time

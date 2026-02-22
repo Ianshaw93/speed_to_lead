@@ -47,6 +47,8 @@ def build_draft_message(
     funnel_stage: FunnelStage | None = None,
     stage_reasoning: str | None = None,
     triggering_message: str | None = None,
+    judge_score: float | None = None,
+    revision_count: int = 0,
 ) -> list[dict[str, Any]]:
     """Build Slack Block Kit message for draft notification.
 
@@ -133,6 +135,25 @@ def build_draft_message(
         {
             "type": "divider"
         },
+    ])
+
+    # Add judge quality score if available
+    if judge_score is not None:
+        if judge_score >= 4.0:
+            dot = ":large_green_circle:"
+        elif judge_score >= 3.5:
+            dot = ":large_yellow_circle:"
+        else:
+            dot = ":red_circle:"
+        score_text = f"{dot} *Quality: {judge_score:.1f}/5*"
+        if revision_count > 0:
+            score_text += f"  (revised {revision_count}x)"
+        blocks.append({
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": score_text}]
+        })
+
+    blocks.extend([
         {
             "type": "section",
             "text": {
@@ -908,6 +929,67 @@ def build_engagement_buttons(post_id: uuid.UUID) -> list[dict[str, Any]]:
     ]
 
 
+def build_health_check_alert_blocks(
+    report: "HealthCheckReport",
+) -> list[dict[str, Any]]:
+    """Build Slack Block Kit message for health check alert.
+
+    Only called when there are failures. Lists failing checks with emoji.
+
+    Args:
+        report: The health check report with results.
+
+    Returns:
+        List of Slack Block Kit blocks.
+    """
+    from app.services.health_check import CheckStatus
+
+    status_emoji = {
+        CheckStatus.WARNING: ":warning:",
+        CheckStatus.CRITICAL: ":rotating_light:",
+    }
+
+    header_text = f"System Health Check - {report.status.value.upper()}"
+
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": header_text,
+                "emoji": True,
+            },
+        },
+        {"type": "divider"},
+    ]
+
+    for check in report.failing:
+        emoji = status_emoji.get(check.status, ":question:")
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"{emoji} *{check.name}* [{check.status.value}]\n{check.message}",
+            },
+        })
+
+    total = len(report.checks)
+    passing = report.passing
+    ts = report.timestamp.strftime("%Y-%m-%d %H:%M UTC")
+
+    blocks.append({
+        "type": "context",
+        "elements": [
+            {
+                "type": "mrkdwn",
+                "text": f"{passing}/{total} checks passing | {ts}",
+            }
+        ],
+    })
+
+    return blocks
+
+
 class SlackBot:
     """Client for sending Slack notifications."""
 
@@ -961,6 +1043,11 @@ class SlackBot:
         is_first_reply: bool = False,
         triggering_message: str | None = None,
         prospect_id: uuid.UUID | None = None,
+        judge_score: float | None = None,
+        revision_count: int = 0,
+        qa_score: float | None = None,
+        qa_verdict: str | None = None,
+        qa_issues: list[dict] | None = None,
     ) -> str:
         """Send a draft notification to Slack.
 
@@ -977,6 +1064,9 @@ class SlackBot:
             is_first_reply: Whether this is the lead's first reply.
             triggering_message: The outbound message that triggered this reply (optional).
             prospect_id: The prospect ID for Gift Leads button (optional).
+            qa_score: QA agent score 1.0-5.0 (optional).
+            qa_verdict: QA verdict - pass/flag/block (optional).
+            qa_issues: List of QA issue dicts (optional).
 
         Returns:
             The Slack message timestamp (ts) for updates.
@@ -995,7 +1085,14 @@ class SlackBot:
                 funnel_stage=funnel_stage,
                 stage_reasoning=stage_reasoning,
                 triggering_message=triggering_message,
+                judge_score=judge_score,
+                revision_count=revision_count,
             )
+
+            # Add QA annotation block if QA was run
+            if qa_score is not None:
+                blocks.extend(build_qa_annotation(qa_score, qa_verdict, qa_issues))
+
             # Add classification buttons (above action buttons)
             blocks.extend(build_classification_buttons(draft_id, is_first_reply, prospect_id))
             # Add action buttons (Send, Edit, etc.)
@@ -2028,6 +2125,36 @@ class SlackBot:
             raise SlackError(f"Failed to send trend scout report: {e.response['error']}") from e
         except Exception as e:
             raise SlackError(f"Failed to send trend scout report: {e}") from e
+
+    async def send_health_check_alert(
+        self,
+        report: "HealthCheckReport",
+    ) -> str:
+        """Send health check alert to metrics channel.
+
+        Only sends when report has WARNING or CRITICAL checks.
+
+        Args:
+            report: The health check report.
+
+        Returns:
+            The Slack message timestamp.
+
+        Raises:
+            SlackError: If sending fails.
+        """
+        try:
+            blocks = build_health_check_alert_blocks(report)
+            response = await self._client.chat_postMessage(
+                channel=self._metrics_channel_id,
+                blocks=blocks,
+                text=f"System Health Check - {report.status.value.upper()}",
+            )
+            return response["ts"]
+        except SlackApiError as e:
+            raise SlackError(f"Failed to send health check alert: {e.response['error']}") from e
+        except Exception as e:
+            raise SlackError(f"Failed to send health check alert: {e}") from e
 
     async def send_engagement_notification(
         self,

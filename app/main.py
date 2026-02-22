@@ -30,7 +30,7 @@ try:
     from app.schemas import HeyReachWebhookPayload, HealthResponse
     logger.info("Schemas imported")
 
-    from app.services.deepseek import generate_reply_draft
+    from app.services.deepseek import generate_reply_draft, generate_reply_draft_with_judgment
     from app.services.slack import SlackBot
     logger.info("Services imported")
 
@@ -39,6 +39,7 @@ try:
     from app.routers.engagement import router as engagement_router
     from app.routers.changelog import router as changelog_router
     from app.routers.pipelines import router as pipelines_router
+    from app.routers.costs import router as costs_router
     logger.info("Routers imported")
 except Exception as e:
     logger.error(f"Import failed: {e}", exc_info=True)
@@ -80,6 +81,7 @@ app.include_router(metrics_router)
 app.include_router(engagement_router)
 app.include_router(changelog_router)
 app.include_router(pipelines_router)
+app.include_router(costs_router)
 
 
 @app.middleware("http")
@@ -314,6 +316,59 @@ async def sync_funnel_stages(request: Request) -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/admin/health-check")
+async def admin_health_check(request: Request) -> dict:
+    """Run all health checks and return full results.
+
+    Protected by SECRET_KEY in the Authorization header.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    expected = f"Bearer {settings.secret_key}"
+
+    if auth_header != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    from app.services.health_check import run_health_check
+
+    async with async_session_factory() as session:
+        report = await run_health_check(session)
+
+    return {
+        "status": report.status.value,
+        "timestamp": report.timestamp.isoformat(),
+        "passing": report.passing,
+        "total": len(report.checks),
+        "checks": [
+            {
+                "name": c.name,
+                "status": c.status.value,
+                "message": c.message,
+                "details": c.details,
+            }
+            for c in report.checks
+        ],
+    }
+
+
+@app.get("/admin/health-check/status")
+async def admin_health_check_status() -> dict:
+    """Quick health check summary - no auth required.
+
+    Returns overall status and names of failing checks only.
+    """
+    from app.services.health_check import run_health_check
+
+    async with async_session_factory() as session:
+        report = await run_health_check(session)
+
+    return {
+        "status": report.status.value,
+        "passing": report.passing,
+        "total": len(report.checks),
+        "failing": [c.name for c in report.failing],
+    }
+
+
 async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
     """Process an incoming message from HeyReach webhook.
 
@@ -437,7 +492,7 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
                 "personalized_message": payload.lead.personalized_message if payload.lead else None,
             }
 
-            draft_result = await generate_reply_draft(
+            draft_result = await generate_reply_draft_with_judgment(
                 lead_name=payload.lead_name,
                 lead_message=payload.latest_message,
                 conversation_history=history,
@@ -475,10 +530,72 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
                         prospect.last_name = parts[1] if len(parts) > 1 else None
                     logger.info(f"Linked prospect {prospect.id} to conversation {conversation.id}")
 
-            # 5. Pre-generate draft ID so Slack buttons have correct ID
+            # 5. QA check before sending to Slack
+            print("Running QA check on draft...", flush=True)
+            logger.info(f"Running QA check on draft for {payload.lead_name}")
+
+            qa_result = None
+            final_draft_text = draft_result.reply
+            try:
+                from app.services.qa_agent import (
+                    qa_check_with_regen,
+                    load_guidelines_for_stage,
+                )
+
+                guidelines = await load_guidelines_for_stage(
+                    session, draft_result.detected_stage.value
+                )
+
+                qa_result, final_draft_text = await qa_check_with_regen(
+                    lead_name=payload.lead_name,
+                    lead_message=payload.latest_message,
+                    ai_draft=draft_result.reply,
+                    detected_stage=draft_result.detected_stage.value,
+                    stage_reasoning=draft_result.stage_reasoning,
+                    conversation_history=history,
+                    lead_context=lead_context,
+                    guidelines=guidelines,
+                )
+
+                logger.info(
+                    f"QA result for {payload.lead_name}: "
+                    f"score={qa_result.score}, verdict={qa_result.verdict}"
+                )
+
+                # If blocked after regen, store draft but skip Slack
+                if qa_result.verdict == "block":
+                    logger.info(
+                        f"QA blocked draft for {payload.lead_name} "
+                        f"(score={qa_result.score}). Not sending to Slack."
+                    )
+                    draft_id = uuid.uuid4()
+                    draft = Draft(
+                        id=draft_id,
+                        conversation_id=conversation.id,
+                        status=DraftStatus.REJECTED,
+                        ai_draft=final_draft_text,
+                        original_ai_draft=draft_result.reply,
+                        triggering_message=triggering_msg,
+                        is_first_reply=is_first_reply,
+                        qa_score=qa_result.score,
+                        qa_verdict=qa_result.verdict,
+                        qa_issues=[{"type": i.type, "detail": i.detail, "severity": i.severity} for i in qa_result.issues],
+                        qa_model=qa_result.model,
+                        qa_cost_usd=qa_result.cost_usd,
+                    )
+                    session.add(draft)
+                    await session.commit()
+                    return {"draft_id": str(draft_id), "qa_blocked": True}
+
+            except Exception as e:
+                logger.warning(f"QA check failed, proceeding without QA: {e}")
+                qa_result = None
+                final_draft_text = draft_result.reply
+
+            # 6. Pre-generate draft ID so Slack buttons have correct ID
             draft_id = uuid.uuid4()
 
-            # 6. Send draft to Slack for approval (with stage indicator)
+            # 7. Send draft to Slack for approval (with QA annotation)
             print("Sending to Slack...", flush=True)
             slack_bot = SlackBot()
             slack_ts = await slack_bot.send_draft_notification(
@@ -488,25 +605,36 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
                 lead_company=payload.lead_company,
                 linkedin_url=f"https://www.linkedin.com/messaging/thread/{payload.conversation_id}",
                 lead_message=payload.latest_message,
-                ai_draft=draft_result.reply,
+                ai_draft=final_draft_text,
                 funnel_stage=draft_result.detected_stage,
                 stage_reasoning=draft_result.stage_reasoning,
                 is_first_reply=is_first_reply,
                 triggering_message=triggering_msg,
                 prospect_id=prospect.id if prospect else None,
+                judge_score=draft_result.judge_score,
+                revision_count=draft_result.revision_count,
+                qa_score=qa_result.score if qa_result else None,
+                qa_verdict=qa_result.verdict if qa_result else None,
+                qa_issues=[{"type": i.type, "detail": i.detail, "severity": i.severity} for i in qa_result.issues] if qa_result and qa_result.issues else None,
             )
             print(f"Slack notification sent, ts: {slack_ts}", flush=True)
             logger.info(f"Sent Slack notification, ts: {slack_ts}")
 
-            # 7. Store draft with the same ID used in Slack buttons
+            # 8. Store draft with the same ID used in Slack buttons
             draft = Draft(
                 id=draft_id,
                 conversation_id=conversation.id,
                 status=DraftStatus.PENDING,
-                ai_draft=draft_result.reply,
+                ai_draft=final_draft_text,
+                original_ai_draft=draft_result.reply,
                 slack_message_ts=slack_ts,
                 triggering_message=triggering_msg,
                 is_first_reply=is_first_reply,
+                qa_score=qa_result.score if qa_result else None,
+                qa_verdict=qa_result.verdict if qa_result else None,
+                qa_issues=[{"type": i.type, "detail": i.detail, "severity": i.severity} for i in qa_result.issues] if qa_result and qa_result.issues else None,
+                qa_model=qa_result.model if qa_result else None,
+                qa_cost_usd=qa_result.cost_usd if qa_result else None,
             )
             session.add(draft)
 
