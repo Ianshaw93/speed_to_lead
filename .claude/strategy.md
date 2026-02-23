@@ -19,6 +19,16 @@
 3. **Reply fast** — speed to lead on incoming responses.
 4. **Content 5 posts/week** — ongoing habit (was 2 last week, ramping to 5). Runs in parallel, compounds over time.
 
+## Next Up (Phase 1.5: QA Layer)
+
+Once draft generation quality is solid (prompts tuned, principles working, dynamic examples shipping good results), add the automated QA agent:
+
+- **What:** `app/services/qa_agent.py` — scores each draft 1-5, issues pass/flag/block verdict, auto-regenerates below threshold, blocks truly bad drafts from Slack
+- **Why:** Catches the drafts that slip through prompt improvements. Even good prompts produce occasional bad outputs — QA is the safety net.
+- **Scaffolding already in place:** `main.py:569-628` imports and calls `qa_check_with_regen()`, handles scoring/blocking, stores QA fields on Draft. Just needs the module built.
+- **Blocked on:** Prompt quality. No point scoring garbage — need generation to be good enough that QA has something meaningful to evaluate. Use `/test-prompts` to validate generation quality first.
+- **DB fields needed:** `qa_score`, `qa_verdict`, `qa_issues`, `qa_model`, `qa_cost_usd` on Draft model (Alembic migration required)
+
 ## Next Up (Phase 2: Optimize Inputs)
 
 Once the reply pipeline is flowing and replies→pitched→booked converts:
