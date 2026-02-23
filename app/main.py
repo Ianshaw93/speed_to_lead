@@ -5,7 +5,7 @@ import os
 import sys
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 # Configure logging early
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
@@ -14,14 +14,15 @@ logger = logging.getLogger(__name__)
 logger.info("Starting app import...")
 
 try:
-    from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+    from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
     from sqlalchemy import select
     logger.info("FastAPI and SQLAlchemy imported")
 
     from app.config import settings
     logger.info(f"Settings loaded, database_url starts with: {settings.database_url[:20]}...")
 
-    from app.database import async_session_factory
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from app.database import async_session_factory, get_db
     logger.info("Database session factory created")
 
     from app.models import Conversation, Draft, DraftStatus, FunnelStage, MessageDirection, MessageLog, PipelineRun, Prospect, ProspectSource
@@ -370,6 +371,42 @@ async def admin_health_check_status() -> dict:
     }
 
 
+@app.post("/admin/expire-stale-drafts")
+async def admin_expire_stale_drafts(
+    request: Request,
+    older_than_days: int = 7,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Bulk-expire PENDING drafts older than N days.
+
+    Protected by SECRET_KEY in the Authorization header.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    expected = f"Bearer {settings.secret_key}"
+
+    if auth_header != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    from sqlalchemy import update
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+
+    result = await db.execute(
+        update(Draft)
+        .where(Draft.status == DraftStatus.PENDING, Draft.created_at < cutoff)
+        .values(status=DraftStatus.REJECTED)
+    )
+    await db.commit()
+    expired_count = result.rowcount
+
+    logger.info(f"Expired {expired_count} stale pending drafts older than {older_than_days}d")
+
+    return {
+        "expired_count": expired_count,
+        "older_than_days": older_than_days,
+    }
+
+
 async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
     """Process an incoming message from HeyReach webhook.
 
@@ -631,8 +668,28 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
                 qa_result = None
                 final_draft_text = draft_result.reply
 
-            # 6. Pre-generate draft ID so Slack buttons have correct ID
+            # 6. Save draft to DB FIRST so Slack buttons always reference an existing draft
             draft_id = uuid.uuid4()
+            draft = Draft(
+                id=draft_id,
+                conversation_id=conversation.id,
+                status=DraftStatus.PENDING,
+                ai_draft=final_draft_text,
+                original_ai_draft=draft_result.reply,
+                slack_message_ts=None,  # Will be set after Slack send
+                triggering_message=triggering_msg,
+                is_first_reply=is_first_reply,
+                judge_score=draft_result.judge_score,
+                judge_feedback=draft_result.judge_feedback,
+                revision_count=draft_result.revision_count,
+                qa_score=qa_result.score if qa_result else None,
+                qa_verdict=qa_result.verdict if qa_result else None,
+                qa_issues=[{"type": i.type, "detail": i.detail, "severity": i.severity} for i in qa_result.issues] if qa_result and qa_result.issues else None,
+                qa_model=qa_result.model if qa_result else None,
+                qa_cost_usd=qa_result.cost_usd if qa_result else None,
+            )
+            session.add(draft)
+            await session.commit()
 
             # 7. Send draft to Slack for approval (with QA annotation)
             print("Sending to Slack...", flush=True)
@@ -659,27 +716,8 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
             print(f"Slack notification sent, ts: {slack_ts}", flush=True)
             logger.info(f"Sent Slack notification, ts: {slack_ts}")
 
-            # 8. Store draft with the same ID used in Slack buttons
-            draft = Draft(
-                id=draft_id,
-                conversation_id=conversation.id,
-                status=DraftStatus.PENDING,
-                ai_draft=final_draft_text,
-                original_ai_draft=draft_result.reply,
-                slack_message_ts=slack_ts,
-                triggering_message=triggering_msg,
-                is_first_reply=is_first_reply,
-                judge_score=draft_result.judge_score,
-                judge_feedback=draft_result.judge_feedback,
-                revision_count=draft_result.revision_count,
-                qa_score=qa_result.score if qa_result else None,
-                qa_verdict=qa_result.verdict if qa_result else None,
-                qa_issues=[{"type": i.type, "detail": i.detail, "severity": i.severity} for i in qa_result.issues] if qa_result and qa_result.issues else None,
-                qa_model=qa_result.model if qa_result else None,
-                qa_cost_usd=qa_result.cost_usd if qa_result else None,
-            )
-            session.add(draft)
-
+            # 8. Update draft with Slack message timestamp
+            draft.slack_message_ts = slack_ts
             await session.commit()
 
             logger.info(f"Created draft {draft.id} for conversation {conversation.id}")
