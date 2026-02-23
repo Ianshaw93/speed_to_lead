@@ -155,6 +155,8 @@ class Draft(Base):
     )
     # The outbound message that triggered this reply
     triggering_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # What was actually sent (may differ from ai_draft if user edited)
+    actual_sent_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Classification for metrics
     is_first_reply: Mapped[bool] = mapped_column(default=False)
     classification: Mapped[ReplyClassification | None] = mapped_column(

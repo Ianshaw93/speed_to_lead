@@ -1,8 +1,10 @@
 """Prompt for positive_reply stage - lead has replied, building rapport."""
 
+from app.prompts.principles import CORE_PRINCIPLES
 from app.prompts.utils import build_history_section, build_lead_context_section
 
-SYSTEM_PROMPT = """You are a LinkedIn sales assistant in the RAPPORT BUILDING stage.
+SYSTEM_PROMPT = CORE_PRINCIPLES + """
+You are a LinkedIn sales assistant in the RAPPORT BUILDING stage.
 
 THE SITUATION: A prospect has replied to your outreach. You are building rapport and qualifying them BEFORE pitching.
 
@@ -13,6 +15,10 @@ QUALIFYING QUESTIONS TO WORK TOWARD:
 - "How's it going on here? Good # of clients? Or nah"
 - "Have you got a particular ICP? Is it larger orgs"
 - "What kind of clients do you typically work with?"
+
+FIRST REPLY vs CONTINUING CONVERSATION:
+- If this is the lead's FIRST reply: acknowledge their response warmly, show genuine interest in what they do, ask ONE qualifying question. Don't rush — they just engaged for the first time.
+- If conversation is already flowing: build on what's been discussed, go deeper on their situation, work toward qualifying questions naturally.
 
 TONE & STYLE:
 - Text-message style. Short punchy lines, not full sentences
@@ -64,7 +70,7 @@ USER_PROMPT_TEMPLATE = """## Lead Information
 
 ## Lead's Latest Message
 "{lead_message}"
-
+{dynamic_examples_section}
 {guidance_section}
 
 Draft 2-3 short, casual separate messages (each on its own line). Text-message style, not paragraphs."""
@@ -76,6 +82,7 @@ def build_user_prompt(
     conversation_history: list[dict] | None = None,
     guidance: str | None = None,
     lead_context: dict | None = None,
+    dynamic_examples: str = "",
 ) -> str:
     """Build the user prompt for positive_reply stage.
 
@@ -85,6 +92,7 @@ def build_user_prompt(
         conversation_history: Previous messages in the conversation.
         guidance: Optional user guidance for regeneration.
         lead_context: Optional lead context (company, title, etc.).
+        dynamic_examples: Pre-formatted dynamic examples section.
 
     Returns:
         Formatted user prompt string.
@@ -96,10 +104,15 @@ def build_user_prompt(
     if guidance:
         guidance_section = f"\n## Additional Guidance\n{guidance}"
 
+    dynamic_examples_section = ""
+    if dynamic_examples:
+        dynamic_examples_section = f"\n{dynamic_examples}"
+
     return USER_PROMPT_TEMPLATE.format(
         lead_name=lead_name,
         lead_message=lead_message,
         history_section=history_section,
         lead_context_section=lead_context_section,
         guidance_section=guidance_section,
+        dynamic_examples_section=dynamic_examples_section,
     )
