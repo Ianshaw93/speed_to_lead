@@ -315,8 +315,9 @@ async def _process_approve(draft_id: uuid.UUID, message_ts: str) -> None:
                 message=draft.ai_draft,
             )
 
-            # Update draft status
+            # Update draft status and capture what was actually sent
             draft.status = DraftStatus.APPROVED
+            draft.actual_sent_text = draft.ai_draft
 
             # Log outbound message
             message_log = MessageLog(
@@ -448,12 +449,30 @@ async def _process_regenerate(draft_id: uuid.UUID, message_ts: str) -> None:
                         "personalized_message": prospect.personalized_message,
                     }
 
+            # Retrieve dynamic examples for the regeneration
+            dynamic_examples_str = ""
+            try:
+                from app.services.example_retriever import get_similar_examples, format_examples_for_prompt
+                lead_message = conversation.conversation_history[-1].get("content", "") if conversation.conversation_history else ""
+                # Use existing funnel stage if available
+                regen_stage = conversation.funnel_stage or FunnelStage.POSITIVE_REPLY
+                similar_examples = await get_similar_examples(
+                    stage=regen_stage,
+                    lead_context=lead_context,
+                    current_lead_message=lead_message,
+                    db=session,
+                )
+                dynamic_examples_str = format_examples_for_prompt(similar_examples)
+            except Exception as ex:
+                logger.warning(f"Example retrieval failed during regen (non-fatal): {ex}")
+
             # Generate new AI draft
             new_draft = await generate_reply_draft(
                 lead_name=conversation.lead_name,
                 lead_message=conversation.conversation_history[-1].get("content", "") if conversation.conversation_history else "",
                 conversation_history=conversation.conversation_history or [],
                 lead_context=lead_context,
+                dynamic_examples=dynamic_examples_str,
             )
 
             # Update draft in database
@@ -650,8 +669,8 @@ async def _process_modal_submit(draft_id: uuid.UUID, edited_text: str) -> None:
                 )
                 return
 
-            # Update draft with edited text
-            draft.ai_draft = edited_text
+            # Capture what was actually sent (preserving original ai_draft for learning)
+            draft.actual_sent_text = edited_text
 
             # Send via HeyReach
             heyreach = get_heyreach_client()

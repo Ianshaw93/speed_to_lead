@@ -142,6 +142,7 @@ class DeepSeekClient:
         conversation_history: list[dict] | None = None,
         guidance: str | None = None,
         lead_context: dict | None = None,
+        dynamic_examples: str = "",
     ) -> str:
         """Generate a reply using stage-specific prompt.
 
@@ -152,6 +153,7 @@ class DeepSeekClient:
             conversation_history: Previous messages in the conversation.
             guidance: Optional user guidance for regeneration.
             lead_context: Optional lead context (company, title, etc.).
+            dynamic_examples: Pre-formatted examples from similar past conversations.
 
         Returns:
             The generated reply text.
@@ -169,6 +171,7 @@ class DeepSeekClient:
                 conversation_history=conversation_history,
                 guidance=guidance,
                 lead_context=lead_context,
+                dynamic_examples=dynamic_examples,
             )
 
             messages = [
@@ -278,6 +281,7 @@ class DeepSeekClient:
         conversation_history: list[dict] | None = None,
         guidance: str | None = None,
         lead_context: dict | None = None,
+        dynamic_examples: str = "",
     ) -> DraftResult:
         """Generate a draft reply using two-pass flow: detect stage, then generate.
 
@@ -287,6 +291,7 @@ class DeepSeekClient:
             conversation_history: Previous messages in the conversation.
             guidance: Optional user guidance for regeneration.
             lead_context: Optional lead context (company, title, etc.).
+            dynamic_examples: Pre-formatted examples from similar past conversations.
 
         Returns:
             DraftResult with detected_stage, stage_reasoning, and reply.
@@ -310,6 +315,7 @@ class DeepSeekClient:
             conversation_history=conversation_history,
             guidance=guidance,
             lead_context=lead_context,
+            dynamic_examples=dynamic_examples,
         )
 
         return DraftResult(
@@ -337,6 +343,7 @@ async def generate_reply_draft(
     conversation_history: list[dict] | None = None,
     guidance: str | None = None,
     lead_context: dict | None = None,
+    dynamic_examples: str = "",
 ) -> DraftResult:
     """Convenience function to generate a reply draft with stage detection.
 
@@ -346,6 +353,7 @@ async def generate_reply_draft(
         conversation_history: Previous messages in the conversation.
         guidance: Optional user guidance for regeneration.
         lead_context: Optional lead context (company, title, etc.).
+        dynamic_examples: Pre-formatted examples from similar past conversations.
 
     Returns:
         DraftResult with detected_stage, stage_reasoning, and reply.
@@ -357,6 +365,7 @@ async def generate_reply_draft(
         conversation_history=conversation_history,
         guidance=guidance,
         lead_context=lead_context,
+        dynamic_examples=dynamic_examples,
     )
 
 

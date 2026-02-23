@@ -1,8 +1,10 @@
 """Prompt for calendar_sent stage - they agreed, we sent calendar link."""
 
+from app.prompts.principles import CORE_PRINCIPLES
 from app.prompts.utils import build_history_section, build_lead_context_section
 
-SYSTEM_PROMPT = """You are a professional LinkedIn sales assistant. The lead has agreed to meet and you've sent them a calendar/booking link. They're responding to that.
+SYSTEM_PROMPT = CORE_PRINCIPLES + """
+You are a professional LinkedIn sales assistant. The lead has agreed to meet and you've sent them a calendar/booking link. They're responding to that.
 
 ## Your Goal
 Confirm they can book successfully and reduce no-show risk. Keep momentum going.
@@ -41,7 +43,7 @@ USER_PROMPT_TEMPLATE = """## Lead Information
 
 ## Lead's Latest Message
 "{lead_message}"
-
+{dynamic_examples_section}
 {guidance_section}
 
 Draft a brief, helpful reply. They've already agreed to meet - just help them book successfully."""
@@ -53,6 +55,7 @@ def build_user_prompt(
     conversation_history: list[dict] | None = None,
     guidance: str | None = None,
     lead_context: dict | None = None,
+    dynamic_examples: str = "",
 ) -> str:
     """Build the user prompt for calendar_sent stage.
 
@@ -62,6 +65,7 @@ def build_user_prompt(
         conversation_history: Previous messages in the conversation.
         guidance: Optional user guidance for regeneration.
         lead_context: Optional lead context (company, title, etc.).
+        dynamic_examples: Pre-formatted dynamic examples section.
 
     Returns:
         Formatted user prompt string.
@@ -73,10 +77,15 @@ def build_user_prompt(
     if guidance:
         guidance_section = f"\n## Additional Guidance\n{guidance}"
 
+    dynamic_examples_section = ""
+    if dynamic_examples:
+        dynamic_examples_section = f"\n{dynamic_examples}"
+
     return USER_PROMPT_TEMPLATE.format(
         lead_name=lead_name,
         lead_message=lead_message,
         history_section=history_section,
         lead_context_section=lead_context_section,
         guidance_section=guidance_section,
+        dynamic_examples_section=dynamic_examples_section,
     )

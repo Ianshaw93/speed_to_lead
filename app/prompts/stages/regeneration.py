@@ -1,8 +1,10 @@
 """Prompt for regeneration stage - re-engaging after drop-off."""
 
+from app.prompts.principles import CORE_PRINCIPLES
 from app.prompts.utils import build_history_section, build_lead_context_section
 
-SYSTEM_PROMPT = """You are a professional LinkedIn sales assistant. This conversation went cold - the lead stopped responding after previous exchanges. You're re-engaging them.
+SYSTEM_PROMPT = CORE_PRINCIPLES + """
+You are a professional LinkedIn sales assistant. This conversation went cold - the lead stopped responding after previous exchanges. You're re-engaging them.
 
 ## Your Goal
 Re-engage with value, not desperation. Give them an easy on-ramp back to conversation.
@@ -47,7 +49,7 @@ This lead went quiet after previous exchanges. Time to re-engage with value.
 
 ## Lead's Last Known Message
 "{lead_message}"
-
+{dynamic_examples_section}
 {guidance_section}
 
 Draft a re-engagement message that leads with value. Keep it casual and low-pressure. Don't mention that they went quiet."""
@@ -59,6 +61,7 @@ def build_user_prompt(
     conversation_history: list[dict] | None = None,
     guidance: str | None = None,
     lead_context: dict | None = None,
+    dynamic_examples: str = "",
 ) -> str:
     """Build the user prompt for regeneration stage.
 
@@ -68,6 +71,7 @@ def build_user_prompt(
         conversation_history: Previous messages in the conversation.
         guidance: Optional user guidance for regeneration.
         lead_context: Optional lead context (company, title, etc.).
+        dynamic_examples: Pre-formatted dynamic examples section.
 
     Returns:
         Formatted user prompt string.
@@ -79,10 +83,15 @@ def build_user_prompt(
     if guidance:
         guidance_section = f"\n## Additional Guidance\n{guidance}"
 
+    dynamic_examples_section = ""
+    if dynamic_examples:
+        dynamic_examples_section = f"\n{dynamic_examples}"
+
     return USER_PROMPT_TEMPLATE.format(
         lead_name=lead_name,
         lead_message=lead_message,
         history_section=history_section,
         lead_context_section=lead_context_section,
         guidance_section=guidance_section,
+        dynamic_examples_section=dynamic_examples_section,
     )

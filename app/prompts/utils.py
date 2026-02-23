@@ -46,6 +46,10 @@ def build_lead_context_section(lead_context: dict | None) -> str:
 
     parts = []
 
+    is_first_reply = lead_context.get("is_first_reply")
+    if is_first_reply:
+        parts.append("**This is the lead's FIRST EVER reply to our outreach.**")
+
     company = lead_context.get("company")
     if company:
         parts.append(f"**Company:** {company}")

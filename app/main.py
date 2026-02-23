@@ -30,7 +30,8 @@ try:
     from app.schemas import HeyReachWebhookPayload, HealthResponse
     logger.info("Schemas imported")
 
-    from app.services.deepseek import generate_reply_draft, generate_reply_draft_with_judgment
+    from app.services.deepseek import generate_reply_draft
+    from app.services.example_retriever import get_similar_examples, format_examples_for_prompt
     from app.services.slack import SlackBot
     logger.info("Services imported")
 
@@ -492,11 +493,46 @@ async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
                 "personalized_message": payload.lead.personalized_message if payload.lead else None,
             }
 
-            draft_result = await generate_reply_draft_with_judgment(
+            # Step 1: Detect funnel stage
+            from app.services.deepseek import get_deepseek_client
+            deepseek = get_deepseek_client()
+            detected_stage, stage_reasoning = await deepseek.detect_stage(
                 lead_name=payload.lead_name,
                 lead_message=payload.latest_message,
                 conversation_history=history,
                 lead_context=lead_context,
+            )
+
+            # Step 2: Retrieve similar past conversations as dynamic examples
+            dynamic_examples_str = ""
+            try:
+                similar_examples = await get_similar_examples(
+                    stage=detected_stage,
+                    lead_context=lead_context,
+                    current_lead_message=payload.latest_message,
+                    db=session,
+                )
+                dynamic_examples_str = format_examples_for_prompt(similar_examples)
+                if similar_examples:
+                    logger.info(f"Retrieved {len(similar_examples)} dynamic examples for stage {detected_stage.value}")
+            except Exception as ex:
+                logger.warning(f"Example retrieval failed (non-fatal): {ex}")
+
+            # Step 3: Generate reply with stage-specific prompt + dynamic examples
+            reply = await deepseek.generate_with_stage(
+                lead_name=payload.lead_name,
+                lead_message=payload.latest_message,
+                stage=detected_stage,
+                conversation_history=history,
+                lead_context=lead_context,
+                dynamic_examples=dynamic_examples_str,
+            )
+
+            from app.services.deepseek import DraftResult
+            draft_result = DraftResult(
+                detected_stage=detected_stage,
+                stage_reasoning=stage_reasoning,
+                reply=reply,
             )
             print(f"Detected stage: {draft_result.detected_stage.value}", flush=True)
             print(f"Generated draft: {draft_result.reply[:100]}...", flush=True)
