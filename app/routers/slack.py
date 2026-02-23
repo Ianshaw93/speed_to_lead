@@ -1456,6 +1456,7 @@ async def _process_gift_leads(
     prospect_name: str,
 ) -> None:
     """Background task to search DB and post gift leads results."""
+    logger.info(f"_process_gift_leads STARTED: prospect={prospect_name}, keywords={keywords}")
     try:
         async with async_session_factory() as session:
             from sqlalchemy import or_, func
@@ -1692,6 +1693,7 @@ async def _process_gift_leads_with_send(
         prospect_name: Display name for the prospect.
         auto_send: If True, send DM immediately without human approval.
     """
+    logger.info(f"_process_gift_leads_with_send STARTED: prospect={prospect_name}, keywords={keywords}, auto_send={auto_send}")
     try:
         async with async_session_factory() as session:
             from sqlalchemy import or_
@@ -2450,6 +2452,7 @@ async def slack_interactions(
         callback_id = view.get("callback_id", "")
         private_metadata = view.get("private_metadata", "")
         values = view.get("state", {}).get("values", {})
+        logger.info(f"Modal submission: callback_id={callback_id}, metadata={private_metadata}")
 
         # Handle follow-up configuration modal
         if callback_id == "configure_followups_submit":
@@ -2564,6 +2567,7 @@ async def slack_interactions(
                 .get("keywords_text", {})
                 .get("value", "")
             )
+            logger.info(f"Gift leads submit: prospect_id={prospect_id}, keywords_text={keywords_text!r}")
 
             keywords = [k.strip() for k in keywords_text.split(",") if k.strip()]
 
@@ -2597,6 +2601,7 @@ async def slack_interactions(
                 .get("keywords_text", {})
                 .get("value", "")
             )
+            logger.info(f"Confirm ICP gift leads submit: prospect_id={prospect_id}, keywords_text={keywords_text!r}")
 
             keywords = [k.strip() for k in keywords_text.split(",") if k.strip()]
 
