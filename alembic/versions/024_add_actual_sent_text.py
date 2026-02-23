@@ -1,7 +1,7 @@
 """Add actual_sent_text column to drafts table.
 
-Revision ID: 023
-Revises: 022
+Revision ID: 024
+Revises: 023
 Create Date: 2026-02-23
 
 Captures what was actually sent (which may differ from ai_draft if the
@@ -14,8 +14,8 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision: str = '023'
-down_revision: Union[str, None] = '022'
+revision: str = '024'
+down_revision: Union[str, None] = '023'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

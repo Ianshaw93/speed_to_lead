@@ -315,6 +315,11 @@ async def _process_approve(draft_id: uuid.UUID, message_ts: str) -> None:
                 message=draft.ai_draft,
             )
 
+            # Preserve original AI draft for audit trail
+            if draft.original_ai_draft is None:
+                draft.original_ai_draft = draft.ai_draft
+            # human_edited_draft stays None = approved as-is
+
             # Update draft status and capture what was actually sent
             draft.status = DraftStatus.APPROVED
             draft.actual_sent_text = draft.ai_draft
@@ -669,8 +674,12 @@ async def _process_modal_submit(draft_id: uuid.UUID, edited_text: str) -> None:
                 )
                 return
 
-            # Capture what was actually sent (preserving original ai_draft for learning)
+            # Preserve original AI draft and record human edit
+            if draft.original_ai_draft is None:
+                draft.original_ai_draft = draft.ai_draft
+            draft.human_edited_draft = edited_text
             draft.actual_sent_text = edited_text
+            draft.ai_draft = edited_text
 
             # Send via HeyReach
             heyreach = get_heyreach_client()
