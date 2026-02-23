@@ -182,6 +182,92 @@ async def run_trend_scout_scheduled_task() -> None:
             pass
 
 
+async def expire_stale_drafts_task(session=None) -> None:
+    """Expire stale PENDING drafts. Called daily at 1am UK time.
+
+    Rejects PENDING drafts that are:
+    1. Older than 7 days (original behavior)
+    2. Already classified (not_interested / not_icp) but status wasn't updated
+    3. Superseded by an outbound message sent after the draft was created
+
+    Args:
+        session: Optional DB session (for testing). If None, creates its own.
+    """
+    import logging
+    from sqlalchemy import exists, select, update
+    from app.models import Draft, DraftStatus, MessageDirection, MessageLog
+
+    logger = logging.getLogger(__name__)
+
+    async def _do_expire(s):
+        now = datetime.now(timezone.utc)
+        total = 0
+
+        # 1. PENDING drafts older than 7 days
+        cutoff = now - timedelta(days=7)
+        result = await s.execute(
+            update(Draft)
+            .where(Draft.status == DraftStatus.PENDING, Draft.created_at < cutoff)
+            .values(status=DraftStatus.REJECTED)
+        )
+        aged_out = result.rowcount
+        total += aged_out
+
+        # 2. PENDING drafts that were classified but status never changed
+        result = await s.execute(
+            update(Draft)
+            .where(
+                Draft.status == DraftStatus.PENDING,
+                Draft.classification.isnot(None),
+            )
+            .values(status=DraftStatus.REJECTED)
+        )
+        classified = result.rowcount
+        total += classified
+
+        # 3. PENDING drafts superseded by a later outbound message in same conversation
+        superseded_subq = (
+            select(Draft.id)
+            .where(
+                Draft.status == DraftStatus.PENDING,
+                exists(
+                    select(MessageLog.id).where(
+                        MessageLog.conversation_id == Draft.conversation_id,
+                        MessageLog.direction == MessageDirection.OUTBOUND,
+                        MessageLog.sent_at > Draft.created_at,
+                    )
+                ),
+            )
+        ).scalar_subquery()
+
+        result = await s.execute(
+            update(Draft)
+            .where(Draft.id.in_(superseded_subq))
+            .values(status=DraftStatus.REJECTED)
+        )
+        superseded = result.rowcount
+        total += superseded
+
+        await s.commit()
+        logger.info(
+            f"Auto-expired {total} stale drafts "
+            f"(aged={aged_out}, classified={classified}, superseded={superseded})"
+        )
+        return total
+
+    try:
+        if session is not None:
+            count = await _do_expire(session)
+        else:
+            from app.database import async_session_factory
+            async with async_session_factory() as s:
+                count = await _do_expire(s)
+
+        logger.info(f"Auto-expired {count} stale pending drafts")
+    except Exception as e:
+        logger.error(f"Failed to expire stale drafts: {e}", exc_info=True)
+
+
 async def run_health_check_task() -> None:
     """Run production health checks. Called by scheduler at 10am and 3pm UK time."""
     import logging
@@ -416,6 +502,20 @@ class SchedulerService:
             name='Weekly metrics report',
             replace_existing=True,
             misfire_grace_time=3600,  # 1 hour grace
+        )
+
+        # Expire stale pending drafts at 1am UK time
+        self._scheduler.add_job(
+            expire_stale_drafts_task,
+            trigger=CronTrigger(
+                hour=1,
+                minute=0,
+                timezone='Europe/London',
+            ),
+            id='expire_stale_drafts',
+            name='Expire stale pending drafts',
+            replace_existing=True,
+            misfire_grace_time=3600,
         )
 
         # Health check at 10am and 3pm UK time

@@ -1125,6 +1125,10 @@ async def _process_classification(
             draft.classification = classification
             draft.classified_at = datetime.now(timezone.utc)
 
+            # Auto-reject draft when classified as not interested or not ICP
+            if classification in (ReplyClassification.NOT_INTERESTED, ReplyClassification.NOT_ICP):
+                draft.status = DraftStatus.REJECTED
+
             # Get conversation and prospect for classification updates
             conversation = draft.conversation
             normalized_url = conversation.linkedin_profile_url.lower().strip().rstrip("/")

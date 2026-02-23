@@ -348,7 +348,7 @@ async def check_pipeline_runs(session: AsyncSession) -> CheckResult:
 # ---------------------------------------------------------------------------
 
 async def check_connection_tracking(session: AsyncSession) -> CheckResult:
-    """Verify connection requests are being tracked."""
+    """Verify connection requests are being sent."""
     now = datetime.now(timezone.utc)
 
     result = await session.execute(
@@ -359,7 +359,7 @@ async def check_connection_tracking(session: AsyncSession) -> CheckResult:
     count = result.scalar() or 0
 
     if count > 0:
-        return CheckResult("connection_tracking", CheckStatus.OK, f"{count} connections sent in last 7d")
+        return CheckResult("connection_tracking", CheckStatus.OK, f"{count} connection requests sent in last 7d")
 
     return CheckResult("connection_tracking", CheckStatus.WARNING, "No connection_sent_at in last 7d")
 

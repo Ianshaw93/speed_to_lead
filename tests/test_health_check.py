@@ -110,9 +110,9 @@ class TestCheckInboundMessages:
     async def test_warning_no_recent(self, test_db_session: AsyncSession):
         conv = _make_conversation(test_db_session)
         await test_db_session.flush()
-        # Message 50h ago (past 48h warning but within 72h critical)
+        # 75h exceeds both Monday (72h) and non-Monday (48h) warn windows
         _make_message(test_db_session, conv, MessageDirection.INBOUND,
-                      sent_at=datetime.now(timezone.utc) - timedelta(hours=50))
+                      sent_at=datetime.now(timezone.utc) - timedelta(hours=75))
         await test_db_session.commit()
 
         result = await check_inbound_messages(test_db_session)
@@ -144,8 +144,9 @@ class TestCheckOutboundMessages:
     async def test_warning_no_recent(self, test_db_session: AsyncSession):
         conv = _make_conversation(test_db_session)
         await test_db_session.flush()
+        # 75h exceeds both Monday (72h) and non-Monday (36h) warn windows
         _make_message(test_db_session, conv, MessageDirection.OUTBOUND,
-                      sent_at=datetime.now(timezone.utc) - timedelta(hours=40))
+                      sent_at=datetime.now(timezone.utc) - timedelta(hours=75))
         await test_db_session.commit()
 
         result = await check_outbound_messages(test_db_session)
