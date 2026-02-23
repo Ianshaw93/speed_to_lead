@@ -118,7 +118,15 @@ class DeepSeekClient:
             Tuple of (FunnelStage, reasoning string).
         """
         try:
-            data = json.loads(content)
+            # Strip markdown code fences if present (e.g. ```json ... ```)
+            clean = content.strip()
+            if clean.startswith("```"):
+                clean = clean.split("\n", 1)[1] if "\n" in clean else clean[3:]
+            if clean.endswith("```"):
+                clean = clean[:-3]
+            clean = clean.strip()
+
+            data = json.loads(clean)
             stage_str = data.get("detected_stage", "positive_reply")
             reasoning = data.get("reasoning", "")
 
@@ -132,6 +140,7 @@ class DeepSeekClient:
             return stage, reasoning
 
         except json.JSONDecodeError:
+            logger.warning(f"Could not parse stage detection response: {content[:200]}")
             return FunnelStage.POSITIVE_REPLY, "Fallback: could not parse JSON response"
 
     async def generate_with_stage(

@@ -272,16 +272,16 @@ async def run_tests(
     total_tests = 0
     total_stages = 0
 
-    async with session_factory() as session:
-        for stage in stages:
-            label = STAGE_LABELS.get(stage, stage)
-            print(f"\n{C.BOLD}{C.HEADER}{'#'*70}{C.END}")
-            print(f"{C.BOLD}{C.HEADER}  STAGE: {label}{C.END}")
-            print(f"{C.BOLD}{C.HEADER}{'#'*70}{C.END}")
+    for stage in stages:
+        label = STAGE_LABELS.get(stage, stage)
+        print(f"\n{C.BOLD}{C.HEADER}{'#'*70}{C.END}")
+        print(f"{C.BOLD}{C.HEADER}  STAGE: {label}{C.END}")
+        print(f"{C.BOLD}{C.HEADER}{'#'*70}{C.END}")
 
-            output_lines.append(f"\n## {label}")
-            output_lines.append("")
+        output_lines.append(f"\n## {label}")
+        output_lines.append("")
 
+        async with session_factory() as session:
             conversations = await get_test_conversations(session, stage, count)
 
             if not conversations:
