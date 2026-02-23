@@ -26,10 +26,17 @@ Environment:
 
 import argparse
 import asyncio
+import io
 import json
 import os
 import sys
 from pathlib import Path
+
+# Fix Windows console encoding for unicode characters (arrows, em dashes, etc.)
+if sys.stdout.encoding != "utf-8":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+if sys.stderr.encoding != "utf-8":
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -319,7 +326,7 @@ async def run_tests(
 
     # Save to file if requested
     if output_file:
-        Path(output_file).write_text("\n".join(output_lines))
+        Path(output_file).write_text("\n".join(output_lines), encoding="utf-8")
         print(f"\n{C.GREEN}Results saved to: {output_file}{C.END}")
 
 
