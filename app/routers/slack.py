@@ -1113,6 +1113,35 @@ async def _process_classification(
                 if prospect:
                     prospect.positive_reply_at = datetime.now(timezone.utc)
                     logger.info(f"Set positive_reply_at for prospect {prospect.id}")
+
+                    # Auto-trigger gift leads for buying signal prospects
+                    if prospect.source_type == ProspectSource.BUYING_SIGNAL:
+                        import asyncio
+
+                        icp = extract_icp_niche_from_dm(prospect.personalized_message)
+                        if not icp and prospect.icp_reason:
+                            icp = prospect.icp_reason
+                        keywords_str = derive_keywords_from_icp(icp)
+                        keywords = [k.strip() for k in keywords_str.split(",") if k.strip()]
+
+                        if keywords:
+                            logger.info(
+                                f"Auto-triggering gift leads for buying signal prospect "
+                                f"{prospect.id} ({prospect.full_name}) with keywords: {keywords}"
+                            )
+                            asyncio.create_task(
+                                _process_gift_leads_with_send(
+                                    prospect_id=prospect.id,
+                                    keywords=keywords,
+                                    prospect_name=prospect.full_name or "Unknown",
+                                    auto_send=True,
+                                )
+                            )
+                        else:
+                            logger.info(
+                                f"Buying signal prospect {prospect.id} has no ICP keywords, "
+                                f"skipping auto gift leads"
+                            )
                 else:
                     logger.warning(f"No prospect found for {normalized_url} to mark as positive")
 
@@ -1619,11 +1648,21 @@ async def _process_gift_leads_with_send(
     prospect_id: uuid.UUID,
     keywords: list[str],
     prospect_name: str,
+    auto_send: bool = False,
 ) -> None:
-    """Background task to search DB and post results with Send button.
+    """Background task to search DB, create Google Sheet, and post results.
 
-    Same logic as _process_gift_leads but posts results with a
-    "Send Leads to [Name]" button for composing a LinkedIn DM.
+    Searches for matching leads, creates a Google Sheet with the results
+    (shared via "anyone with link"), and posts to Slack with a Send button.
+
+    If auto_send=True, skips the Slack approval step and sends the DM
+    immediately via HeyReach (used for buying signal auto-trigger).
+
+    Args:
+        prospect_id: The prospect to find leads for.
+        keywords: Search keywords for job_title/headline matching.
+        prospect_name: Display name for the prospect.
+        auto_send: If True, send DM immediately without human approval.
     """
     try:
         async with async_session_factory() as session:
@@ -1673,21 +1712,56 @@ async def _process_gift_leads_with_send(
                 for p in prospects
             ]
 
+        if not leads:
+            slack_bot = get_slack_bot()
+            await slack_bot.send_confirmation(
+                f"No matching leads found for keywords: {', '.join(keywords)}\n"
+                f"Pool has {pool_size} prospects with activity scores.\n"
+                f"Run the gift leads pipeline locally to build the pool."
+            )
+            return
+
+        # Create Google Sheet with leads (if configured)
+        sheet_url = None
+        from app.services.google_sheets import get_google_sheets_service
+
+        sheets_svc = get_google_sheets_service()
+        if sheets_svc:
+            try:
+                sheet_url = sheets_svc.create_gift_leads_sheet(
+                    prospect_name=prospect_name,
+                    leads=leads,
+                )
+                logger.info(f"Created gift leads sheet: {sheet_url}")
+            except Exception as e:
+                logger.error(f"Failed to create Google Sheet: {e}", exc_info=True)
+                # Continue without sheet - will fall back to text-only DM
+
         slack_bot = get_slack_bot()
 
-        if leads:
+        if auto_send:
+            # Auto-send: compose DM with sheet link and send immediately
+            await _auto_send_gift_leads(
+                prospect_id=prospect_id,
+                prospect_name=prospect_name,
+                leads=leads,
+                sheet_url=sheet_url,
+            )
+            # Notify Slack for awareness
+            await slack_bot.send_gift_leads_auto_sent_notification(
+                prospect_name=prospect_name,
+                lead_count=len(leads),
+                sheet_url=sheet_url,
+                keywords=keywords,
+            )
+        else:
             await slack_bot.send_gift_leads_results_with_send_button(
                 prospect_id=prospect_id,
                 prospect_name=prospect_name,
                 leads=leads,
                 pool_size=pool_size,
                 keywords=keywords,
-            )
-        else:
-            await slack_bot.send_confirmation(
-                f"No matching leads found for keywords: {', '.join(keywords)}\n"
-                f"Pool has {pool_size} prospects with activity scores.\n"
-                f"Run the gift leads pipeline locally to build the pool."
+                sheet_url=sheet_url,
             )
 
     except Exception as e:
@@ -1696,17 +1770,67 @@ async def _process_gift_leads_with_send(
         await slack_bot.send_confirmation(f"Error finding gift leads: {e}")
 
 
+async def _auto_send_gift_leads(
+    prospect_id: uuid.UUID,
+    prospect_name: str,
+    leads: list[dict],
+    sheet_url: str | None,
+) -> None:
+    """Compose and send gift leads DM automatically.
+
+    Used by the auto-trigger flow for buying signal prospects.
+
+    Args:
+        prospect_id: The prospect to send to.
+        prospect_name: Prospect's full name.
+        leads: List of lead dicts.
+        sheet_url: Google Sheet URL (or None for text fallback).
+    """
+    first_name = prospect_name.split()[0] if prospect_name else "there"
+
+    if sheet_url:
+        message_text = (
+            f"Hey {first_name}, I pulled together some people in your space "
+            f"that might be worth connecting with:\n\n"
+            f"{sheet_url}\n\n"
+            f"Let me know if any of these are useful!"
+        )
+    else:
+        # Fallback to text list if Sheets not configured
+        lead_lines = []
+        for i, lead in enumerate(leads[:10], 1):
+            name = lead.get("full_name") or "Unknown"
+            title = lead.get("job_title") or ""
+            company = lead.get("company_name") or ""
+            line = f"{i}. {name}"
+            if title:
+                line += f" - {title}"
+            if company:
+                line += f" @ {company}"
+            lead_lines.append(line)
+        leads_text = "\n".join(lead_lines)
+        message_text = (
+            f"Hey {first_name}, here are some people in your space "
+            f"that might be worth connecting with:\n\n{leads_text}"
+        )
+
+    await _send_pitched_message_now(prospect_id, message_text)
+
+
 async def handle_send_gift_leads_dm(
     prospect_id: uuid.UUID,
     trigger_id: str,
+    sheet_url: str | None = None,
 ) -> None:
-    """Handle send_gift_leads_dm button - open editable DM modal with leads list.
+    """Handle send_gift_leads_dm button - open editable DM modal.
 
-    Re-queries leads from DB and formats them as a LinkedIn DM.
+    If a sheet_url is provided, the DM will include the Google Sheet link.
+    Otherwise falls back to a text list of leads.
 
     Args:
         prospect_id: The prospect to send leads to.
         trigger_id: Slack trigger ID for opening modal.
+        sheet_url: Google Sheet URL from the results step (optional).
     """
     try:
         async with async_session_factory() as session:
@@ -1724,41 +1848,44 @@ async def handle_send_gift_leads_dm(
             prospect_name = prospect.full_name or "Unknown"
             first_name = prospect.first_name or prospect_name.split()[0]
 
-            # Re-query leads using the prospect's ICP reason as keywords
-            # (the same keywords used in the search that produced the results)
-            # For now, get latest gift leads by searching with broad keywords
-            from sqlalchemy import or_
-
-            # Get leads that have activity scores (same pool as gift leads)
-            leads_result = await session.execute(
-                select(Prospect)
-                .where(
-                    Prospect.activity_score.isnot(None),
-                    Prospect.id != prospect_id,
+            if sheet_url:
+                # Use Google Sheet link in DM
+                draft_dm = (
+                    f"Hey {first_name}, I pulled together some people in your space "
+                    f"that might be worth connecting with:\n\n"
+                    f"{sheet_url}\n\n"
+                    f"Let me know if any of these are useful!"
                 )
-                .order_by(Prospect.activity_score.desc().nullslast())
-                .limit(10)
-            )
-            leads = leads_result.scalars().all()
+            else:
+                # Fallback to text list
+                leads_result = await session.execute(
+                    select(Prospect)
+                    .where(
+                        Prospect.activity_score.isnot(None),
+                        Prospect.id != prospect_id,
+                    )
+                    .order_by(Prospect.activity_score.desc().nullslast())
+                    .limit(10)
+                )
+                leads = leads_result.scalars().all()
 
-            # Format leads as DM text
-            lead_lines = []
-            for i, lead in enumerate(leads, 1):
-                name = lead.full_name or "Unknown"
-                title = lead.job_title or ""
-                company = lead.company_name or ""
-                line = f"{i}. {name}"
-                if title:
-                    line += f" - {title}"
-                if company:
-                    line += f" @ {company}"
-                lead_lines.append(line)
+                lead_lines = []
+                for i, lead in enumerate(leads, 1):
+                    name = lead.full_name or "Unknown"
+                    title = lead.job_title or ""
+                    company = lead.company_name or ""
+                    line = f"{i}. {name}"
+                    if title:
+                        line += f" - {title}"
+                    if company:
+                        line += f" @ {company}"
+                    lead_lines.append(line)
 
-            leads_text = "\n".join(lead_lines)
-            draft_dm = (
-                f"Hey {first_name}, here are some people in your space "
-                f"that might be worth connecting with:\n\n{leads_text}"
-            )
+                leads_text = "\n".join(lead_lines)
+                draft_dm = (
+                    f"Hey {first_name}, here are some people in your space "
+                    f"that might be worth connecting with:\n\n{leads_text}"
+                )
 
             slack_bot = get_slack_bot()
             await slack_bot.open_send_gift_leads_dm_modal(
@@ -2214,16 +2341,23 @@ async def slack_interactions(
 
         # Handle streamlined gift leads actions (use prospect_id)
         if action_id in ("confirm_icp_gift_leads", "send_gift_leads_dm"):
+            # Value may be a plain UUID or JSON with prospect_id + sheet_url
+            sheet_url = None
             try:
-                prospect_id = uuid.UUID(value_str)
-            except ValueError:
-                logger.error(f"Invalid prospect_id for {action_id}: {value_str}")
-                return {"ok": True}
+                parsed = json.loads(value_str)
+                prospect_id = uuid.UUID(parsed["prospect_id"])
+                sheet_url = parsed.get("sheet_url")
+            except (json.JSONDecodeError, KeyError, TypeError):
+                try:
+                    prospect_id = uuid.UUID(value_str)
+                except ValueError:
+                    logger.error(f"Invalid value for {action_id}: {value_str}")
+                    return {"ok": True}
 
             if action_id == "confirm_icp_gift_leads":
                 await handle_confirm_icp_gift_leads(prospect_id, trigger_id)
             elif action_id == "send_gift_leads_dm":
-                await handle_send_gift_leads_dm(prospect_id, trigger_id)
+                await handle_send_gift_leads_dm(prospect_id, trigger_id, sheet_url)
             return {"ok": True}
 
         # Handle follow-up configuration actions (use conversation_id)

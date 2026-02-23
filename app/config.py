@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     # Anthropic (for trend scout ICP scoring)
     anthropic_api_key: str = ""
 
+    # Google Sheets (for gift leads)
+    google_service_account_json: str = ""
+
     # App
     secret_key: str = "change-me-in-production"
     environment: str = "development"

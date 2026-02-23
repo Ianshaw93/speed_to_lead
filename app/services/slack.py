@@ -1692,6 +1692,7 @@ class SlackBot:
         leads: list[dict],
         pool_size: int,
         keywords: list[str],
+        sheet_url: str | None = None,
     ) -> str:
         """Post gift leads results with a Send Leads DM button.
 
@@ -1704,6 +1705,7 @@ class SlackBot:
             leads: List of lead dicts.
             pool_size: Total prospects in the DB pool.
             keywords: Keywords that were searched.
+            sheet_url: Google Sheet URL (if created).
 
         Returns:
             The Slack message timestamp.
@@ -1723,6 +1725,10 @@ class SlackBot:
 
             table_text = "\n".join(rows) if rows else "No leads found."
 
+            context_text = f"Keywords: {', '.join(keywords)} | {len(leads)} leads from {pool_size} prospects in DB"
+            if sheet_url:
+                context_text += f" | <{sheet_url}|Google Sheet>"
+
             blocks = [
                 {
                     "type": "header",
@@ -1737,7 +1743,7 @@ class SlackBot:
                     "elements": [
                         {
                             "type": "mrkdwn",
-                            "text": f"Keywords: {', '.join(keywords)} | {len(leads)} leads from {pool_size} prospects in DB",
+                            "text": context_text,
                         }
                     ],
                 },
@@ -1753,6 +1759,13 @@ class SlackBot:
 
             # Add Send Leads button if there are results
             if leads:
+                import json as _json
+
+                # Encode prospect_id and sheet_url in button value
+                button_value = _json.dumps({
+                    "prospect_id": str(prospect_id),
+                    "sheet_url": sheet_url,
+                })
                 blocks.append({
                     "type": "actions",
                     "elements": [
@@ -1761,7 +1774,7 @@ class SlackBot:
                             "text": {"type": "plain_text", "text": f"Send Leads to {prospect_name}", "emoji": True},
                             "style": "primary",
                             "action_id": "send_gift_leads_dm",
-                            "value": str(prospect_id),
+                            "value": button_value,
                         }
                     ],
                 })
@@ -1800,6 +1813,53 @@ class SlackBot:
             raise SlackError(f"Failed to send gift leads results: {e.response['error']}") from e
         except Exception as e:
             raise SlackError(f"Failed to send gift leads results: {e}") from e
+
+    async def send_gift_leads_auto_sent_notification(
+        self,
+        prospect_name: str,
+        lead_count: int,
+        sheet_url: str | None,
+        keywords: list[str],
+    ) -> str:
+        """Post notification that gift leads were auto-sent to a prospect.
+
+        Used by the auto-trigger flow for buying signal prospects.
+
+        Args:
+            prospect_name: Name of the prospect.
+            lead_count: Number of leads sent.
+            sheet_url: Google Sheet URL (if created).
+            keywords: Keywords that were searched.
+
+        Returns:
+            The Slack message timestamp.
+        """
+        try:
+            sheet_text = f" | <{sheet_url}|View Sheet>" if sheet_url else ""
+            blocks = [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": (
+                            f"*Auto-sent gift leads to {prospect_name}*\n"
+                            f"{lead_count} leads (keywords: {', '.join(keywords)}){sheet_text}"
+                        ),
+                    },
+                },
+            ]
+
+            response = await self._client.chat_postMessage(
+                channel=self._channel_id,
+                blocks=blocks,
+                text=f"Auto-sent {lead_count} gift leads to {prospect_name}",
+            )
+            return response["ts"]
+
+        except SlackApiError as e:
+            raise SlackError(f"Failed to send auto-sent notification: {e.response['error']}") from e
+        except Exception as e:
+            raise SlackError(f"Failed to send auto-sent notification: {e}") from e
 
     async def open_send_gift_leads_dm_modal(
         self,
