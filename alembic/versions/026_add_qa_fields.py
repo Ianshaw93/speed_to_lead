@@ -13,6 +13,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = '026'
@@ -62,18 +63,19 @@ def upgrade() -> None:
         print("=== draft_learnings table already exists ===", flush=True)
     else:
         print("=== CREATING draft_learnings table ===", flush=True)
-        # Create the enum type first
-        learning_type_enum = sa.Enum(
-            'tone', 'content', 'structure', 'skip_detection', 'product_knowledge',
-            name='learning_type',
-        )
-        learning_type_enum.create(conn, checkfirst=True)
+        # Create the enum type via raw SQL (IF NOT EXISTS avoids duplicate error)
+        conn.execute(sa.text(
+            "DO $$ BEGIN "
+            "CREATE TYPE learning_type AS ENUM ('tone', 'content', 'structure', 'skip_detection', 'product_knowledge'); "
+            "EXCEPTION WHEN duplicate_object THEN NULL; "
+            "END $$"
+        ))
 
         op.create_table(
             'draft_learnings',
             sa.Column('id', sa.UUID(), primary_key=True),
             sa.Column('draft_id', sa.UUID(), sa.ForeignKey('drafts.id'), nullable=False, index=True),
-            sa.Column('learning_type', learning_type_enum, nullable=False),
+            sa.Column('learning_type', postgresql.ENUM('tone', 'content', 'structure', 'skip_detection', 'product_knowledge', name='learning_type', create_type=False), nullable=False),
             sa.Column('original_text', sa.Text(), nullable=False),
             sa.Column('corrected_text', sa.Text(), nullable=False),
             sa.Column('diff_summary', sa.Text(), nullable=False),
@@ -88,17 +90,19 @@ def upgrade() -> None:
         print("=== qa_guidelines table already exists ===", flush=True)
     else:
         print("=== CREATING qa_guidelines table ===", flush=True)
-        guideline_type_enum = sa.Enum(
-            'do', 'dont', 'example', 'tone_rule',
-            name='guideline_type',
-        )
-        guideline_type_enum.create(conn, checkfirst=True)
+        # Create the enum type via raw SQL (IF NOT EXISTS avoids duplicate error)
+        conn.execute(sa.text(
+            "DO $$ BEGIN "
+            "CREATE TYPE guideline_type AS ENUM ('do', 'dont', 'example', 'tone_rule'); "
+            "EXCEPTION WHEN duplicate_object THEN NULL; "
+            "END $$"
+        ))
 
         op.create_table(
             'qa_guidelines',
             sa.Column('id', sa.UUID(), primary_key=True),
             sa.Column('stage', sa.String(50), nullable=False, index=True),
-            sa.Column('guideline_type', guideline_type_enum, nullable=False),
+            sa.Column('guideline_type', postgresql.ENUM('do', 'dont', 'example', 'tone_rule', name='guideline_type', create_type=False), nullable=False),
             sa.Column('content', sa.Text(), nullable=False),
             sa.Column('source_learning_ids', sa.JSON(), nullable=True),
             sa.Column('occurrences', sa.Integer(), nullable=False, server_default='1'),
