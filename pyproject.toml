@@ -26,6 +26,8 @@ dependencies = [
     "anthropic>=0.39.0,<1.0.0",
     "apify-client>=1.6.0,<2.0.0",
     "tzdata>=2024.1",
+    "gspread>=6.0.0,<7.0.0",
+    "google-auth>=2.27.0,<3.0.0",
 ]
 
 [project.optional-dependencies]
