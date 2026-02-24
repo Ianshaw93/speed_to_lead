@@ -1240,6 +1240,28 @@ class SlackBot:
         except Exception as e:
             raise SlackError(f"Failed to send confirmation: {e}") from e
 
+    async def send_pipeline_progress(self, text: str, thread_ts: str) -> str:
+        """Send a progress update as a threaded reply.
+
+        Args:
+            text: Progress message text.
+            thread_ts: Thread timestamp to reply under.
+
+        Returns:
+            The reply message timestamp.
+        """
+        try:
+            response = await self._client.chat_postMessage(
+                channel=self._channel_id,
+                text=text,
+                thread_ts=thread_ts,
+            )
+            return response["ts"]
+        except SlackApiError as e:
+            raise SlackError(f"Failed to send pipeline progress: {e.response['error']}") from e
+        except Exception as e:
+            raise SlackError(f"Failed to send pipeline progress: {e}") from e
+
     async def open_modal_for_edit(
         self,
         trigger_id: str,

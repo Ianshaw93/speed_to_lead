@@ -1747,11 +1747,13 @@ async def _process_gift_leads_with_send(
             ]
 
         if not leads:
-            slack_bot = get_slack_bot()
-            await slack_bot.send_confirmation(
-                f"No matching leads found for keywords: {', '.join(keywords)}\n"
-                f"Pool has {pool_size} prospects with activity scores.\n"
-                f"Run the gift leads pipeline locally to build the pool."
+            # DB pool empty for these keywords → fall back to full research pipeline
+            await _run_gift_pipeline_fallback(
+                prospect_id=prospect_id,
+                prospect_name=prospect_name,
+                keywords=keywords,
+                pool_size=pool_size,
+                auto_send=auto_send,
             )
             return
 
@@ -1802,6 +1804,104 @@ async def _process_gift_leads_with_send(
         logger.error(f"Error processing gift leads with send: {e}", exc_info=True)
         slack_bot = get_slack_bot()
         await slack_bot.send_confirmation(f"Error finding gift leads: {e}")
+
+
+async def _run_gift_pipeline_fallback(
+    prospect_id: uuid.UUID,
+    prospect_name: str,
+    keywords: list[str],
+    pool_size: int,
+    auto_send: bool = False,
+) -> None:
+    """Fall back to the full 12-step gift leads pipeline when DB pool is empty.
+
+    Posts progress updates as Slack thread replies, then posts results
+    with a Send DM button (or auto-sends if auto_send=True).
+    """
+    slack_bot = get_slack_bot()
+
+    # Look up prospect's LinkedIn URL
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(Prospect).where(Prospect.id == prospect_id)
+        )
+        prospect = result.scalar_one_or_none()
+
+    if not prospect or not prospect.linkedin_url:
+        await slack_bot.send_confirmation(
+            f"No matching leads for keywords: {', '.join(keywords)}\n"
+            f"Pool has {pool_size} prospects. Prospect has no LinkedIn URL for pipeline."
+        )
+        return
+
+    # Post initial message and capture thread_ts for progress updates
+    thread_ts = await slack_bot.send_confirmation(
+        f"No DB matches for *{prospect_name}* (keywords: {', '.join(keywords)}).\n"
+        f"Starting full research pipeline (~5-15 min, ~$1.50)..."
+    )
+
+    async def post_progress(text: str) -> None:
+        try:
+            await slack_bot.send_pipeline_progress(text, thread_ts)
+        except Exception as e:
+            logger.error(f"Failed to post pipeline progress: {e}")
+
+    try:
+        from app.services.gift_pipeline import run_gift_leads_pipeline_async
+
+        pipeline_result = await run_gift_leads_pipeline_async(
+            prospect_url=prospect.linkedin_url,
+            prospect_name=prospect_name,
+            progress=post_progress,
+        )
+
+        leads = pipeline_result.get("leads", [])
+        if not leads:
+            error = pipeline_result.get("error", "Unknown error")
+            await post_progress(f"Pipeline finished with 0 leads: {error}")
+            return
+
+        # Create Google Sheet
+        sheet_url = None
+        from app.services.google_sheets import get_google_sheets_service
+
+        sheets_svc = get_google_sheets_service()
+        if sheets_svc:
+            try:
+                sheet_url = sheets_svc.create_gift_leads_sheet(
+                    prospect_name=prospect_name,
+                    leads=leads,
+                )
+                logger.info(f"Created gift leads sheet: {sheet_url}")
+            except Exception as e:
+                logger.error(f"Failed to create Google Sheet: {e}", exc_info=True)
+
+        if auto_send:
+            await _auto_send_gift_leads(
+                prospect_id=prospect_id,
+                prospect_name=prospect_name,
+                leads=leads,
+                sheet_url=sheet_url,
+            )
+            await slack_bot.send_gift_leads_auto_sent_notification(
+                prospect_name=prospect_name,
+                lead_count=len(leads),
+                sheet_url=sheet_url,
+                keywords=keywords,
+            )
+        else:
+            await slack_bot.send_gift_leads_results_with_send_button(
+                prospect_id=prospect_id,
+                prospect_name=prospect_name,
+                leads=leads,
+                pool_size=pool_size,
+                keywords=keywords,
+                sheet_url=sheet_url,
+            )
+
+    except Exception as e:
+        logger.error(f"Gift pipeline fallback error: {e}", exc_info=True)
+        await post_progress(f"Pipeline error: {e}")
 
 
 async def _auto_send_gift_leads(
