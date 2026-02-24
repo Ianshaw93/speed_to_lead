@@ -37,29 +37,9 @@ class GoogleSheetsService:
             scopes=SCOPES,
         )
         self._gc = gspread.authorize(self._creds)
-        self._drive = build("drive", "v3", credentials=self._creds)
+        self._sheets_api = build("sheets", "v4", credentials=self._creds)
+        self._drive_api = build("drive", "v3", credentials=self._creds)
         self._folder_id = settings.google_drive_folder_id or None
-
-    def _create_spreadsheet_in_folder(self, title: str) -> gspread.Spreadsheet:
-        """Create a spreadsheet directly in the shared folder via Drive API.
-
-        This bypasses the service account's own storage quota by creating
-        the file directly in a folder owned by another account.
-        """
-        metadata = {
-            "name": title,
-            "mimeType": "application/vnd.google-apps.spreadsheet",
-        }
-        if self._folder_id:
-            metadata["parents"] = [self._folder_id]
-
-        file = self._drive.files().create(
-            body=metadata,
-            fields="id",
-        ).execute()
-
-        spreadsheet_id = file["id"]
-        return self._gc.open_by_key(spreadsheet_id)
 
     def create_gift_leads_sheet(
         self,
@@ -68,8 +48,7 @@ class GoogleSheetsService:
     ) -> str:
         """Create a Google Sheet with leads data, shared via link.
 
-        Creates directly in the configured Drive folder via Drive API
-        so quota is charged to the folder owner, not the service account.
+        Uses Sheets API to create, then Drive API to move to folder and share.
 
         Args:
             prospect_name: Name of the prospect receiving the leads.
@@ -83,21 +62,11 @@ class GoogleSheetsService:
         """
         try:
             title = f"Leads for {prospect_name} - {date.today()}"
-            spreadsheet = self._create_spreadsheet_in_folder(title)
 
-            worksheet = spreadsheet.sheet1
-            worksheet.update_title("Leads")
-
-            # Full column set matching CSV output
+            # Build full data including headers
             headers = [
-                "Name",
-                "Title",
-                "Company",
-                "Location",
-                "Headline",
-                "Activity Score",
-                "ICP Reason",
-                "LinkedIn",
+                "Name", "Title", "Company", "Location",
+                "Headline", "Activity Score", "ICP Reason", "LinkedIn",
             ]
             rows = [headers]
             for lead in leads:
@@ -112,22 +81,61 @@ class GoogleSheetsService:
                     lead.get("linkedin_url", ""),
                 ])
 
-            worksheet.update(range_name="A1", values=rows)
+            # Create spreadsheet with data in one API call via Sheets API
+            body = {
+                "properties": {"title": title},
+                "sheets": [{
+                    "properties": {"title": "Leads"},
+                    "data": [{
+                        "startRow": 0,
+                        "startColumn": 0,
+                        "rowData": [
+                            {
+                                "values": [
+                                    {
+                                        "userEnteredValue": {"stringValue": cell},
+                                        **({"userEnteredFormat": {"textFormat": {"bold": True}}}
+                                           if row_idx == 0 else {}),
+                                    }
+                                    for cell in row
+                                ]
+                            }
+                            for row_idx, row in enumerate(rows)
+                        ],
+                    }],
+                }],
+            }
 
-            # Bold header row
-            header_range = f"A1:{chr(64 + len(headers))}1"
-            worksheet.format(header_range, {"textFormat": {"bold": True}})
+            result = self._sheets_api.spreadsheets().create(body=body).execute()
+            spreadsheet_id = result["spreadsheetId"]
+            sheet_url = result["spreadsheetUrl"]
 
-            # Auto-resize columns for readability
-            worksheet.columns_auto_resize(0, len(headers))
+            # Move to shared folder if configured
+            if self._folder_id:
+                try:
+                    # Get current parent, move to target folder
+                    file = self._drive_api.files().get(
+                        fileId=spreadsheet_id, fields="parents"
+                    ).execute()
+                    prev_parents = ",".join(file.get("parents", []))
+                    self._drive_api.files().update(
+                        fileId=spreadsheet_id,
+                        addParents=self._folder_id,
+                        removeParents=prev_parents,
+                        fields="id, parents",
+                    ).execute()
+                except Exception as e:
+                    logger.warning(f"Could not move sheet to folder: {e}")
 
             # Share with anyone who has the link (viewer)
-            spreadsheet.share(None, perm_type="anyone", role="reader")
+            self._drive_api.permissions().create(
+                fileId=spreadsheet_id,
+                body={"type": "anyone", "role": "reader"},
+                fields="id",
+            ).execute()
 
-            logger.info(
-                f"Created gift leads sheet for {prospect_name}: {spreadsheet.url}"
-            )
-            return spreadsheet.url
+            logger.info(f"Created gift leads sheet for {prospect_name}: {sheet_url}")
+            return sheet_url
 
         except Exception as e:
             raise GoogleSheetsError(f"Failed to create gift leads sheet: {e}") from e
