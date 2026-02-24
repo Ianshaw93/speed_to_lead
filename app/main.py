@@ -374,10 +374,9 @@ async def admin_health_check_status() -> dict:
 @app.post("/admin/expire-stale-drafts")
 async def admin_expire_stale_drafts(
     request: Request,
-    older_than_days: int = 7,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Bulk-expire PENDING drafts older than N days.
+    """Expire stale PENDING drafts (aged, classified, or superseded).
 
     Protected by SECRET_KEY in the Authorization header.
     """
@@ -387,24 +386,11 @@ async def admin_expire_stale_drafts(
     if auth_header != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    from sqlalchemy import update
+    from app.services.scheduler import expire_stale_drafts_task
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+    await expire_stale_drafts_task(session=db)
 
-    result = await db.execute(
-        update(Draft)
-        .where(Draft.status == DraftStatus.PENDING, Draft.created_at < cutoff)
-        .values(status=DraftStatus.REJECTED)
-    )
-    await db.commit()
-    expired_count = result.rowcount
-
-    logger.info(f"Expired {expired_count} stale pending drafts older than {older_than_days}d")
-
-    return {
-        "expired_count": expired_count,
-        "older_than_days": older_than_days,
-    }
+    return {"status": "ok"}
 
 
 async def process_incoming_message(payload: HeyReachWebhookPayload) -> dict:
