@@ -1648,7 +1648,7 @@ class SlackBot:
                 output = io.StringIO()
                 writer = csv.DictWriter(
                     output,
-                    fieldnames=["full_name", "job_title", "company_name", "location", "activity_score", "linkedin_url"],
+                    fieldnames=["full_name", "job_title", "company_name", "location", "headline", "activity_score", "icp_reason", "linkedin_url"],
                     extrasaction="ignore",
                 )
                 writer.writeheader()
@@ -1862,7 +1862,7 @@ class SlackBot:
                 output = io.StringIO()
                 writer = csv.DictWriter(
                     output,
-                    fieldnames=["full_name", "job_title", "company_name", "location", "activity_score", "linkedin_url"],
+                    fieldnames=["full_name", "job_title", "company_name", "location", "headline", "activity_score", "icp_reason", "linkedin_url"],
                     extrasaction="ignore",
                 )
                 writer.writeheader()

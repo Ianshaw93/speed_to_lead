@@ -45,6 +45,7 @@ class Settings(BaseSettings):
 
     # Google Sheets (for gift leads)
     google_service_account_json: str = ""
+    google_drive_folder_id: str = ""  # Shared folder owned by personal account (avoids SA quota)
 
     # App
     secret_key: str = "change-me-in-production"

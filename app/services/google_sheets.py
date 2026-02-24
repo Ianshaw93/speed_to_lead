@@ -36,6 +36,7 @@ class GoogleSheetsService:
             scopes=SCOPES,
         )
         self._gc = gspread.authorize(creds)
+        self._folder_id = settings.google_drive_folder_id or None
 
     def create_gift_leads_sheet(
         self,
@@ -44,10 +45,12 @@ class GoogleSheetsService:
     ) -> str:
         """Create a Google Sheet with leads data, shared via link.
 
+        Creates in the configured Drive folder (if set) so the sheet uses
+        the folder owner's quota instead of the service account's.
+
         Args:
             prospect_name: Name of the prospect receiving the leads.
-            leads: List of lead dicts with keys: full_name, job_title,
-                   company_name, activity_score, linkedin_url.
+            leads: List of lead dicts.
 
         Returns:
             The shareable Google Sheet URL.
@@ -57,30 +60,43 @@ class GoogleSheetsService:
         """
         try:
             title = f"Leads for {prospect_name} - {date.today()}"
-            spreadsheet = self._gc.create(title)
+            spreadsheet = self._gc.create(title, folder_id=self._folder_id)
 
             worksheet = spreadsheet.sheet1
             worksheet.update_title("Leads")
 
-            # Build rows: header + data
-            headers = ["Name", "Title", "Company", "Activity Score", "LinkedIn"]
+            # Full column set matching CSV output
+            headers = [
+                "Name",
+                "Title",
+                "Company",
+                "Location",
+                "Headline",
+                "Activity Score",
+                "ICP Reason",
+                "LinkedIn",
+            ]
             rows = [headers]
             for lead in leads:
                 rows.append([
                     lead.get("full_name", ""),
                     lead.get("job_title", ""),
                     lead.get("company_name", ""),
+                    lead.get("location", ""),
+                    lead.get("headline", ""),
                     str(lead.get("activity_score", "")),
+                    lead.get("icp_reason", ""),
                     lead.get("linkedin_url", ""),
                 ])
 
             worksheet.update(range_name="A1", values=rows)
 
             # Bold header row
-            worksheet.format("A1:E1", {"textFormat": {"bold": True}})
+            header_range = f"A1:{chr(64 + len(headers))}1"
+            worksheet.format(header_range, {"textFormat": {"bold": True}})
 
             # Auto-resize columns for readability
-            worksheet.columns_auto_resize(0, 5)
+            worksheet.columns_auto_resize(0, len(headers))
 
             # Share with anyone who has the link (viewer)
             spreadsheet.share(None, perm_type="anyone", role="reader")

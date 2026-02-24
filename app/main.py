@@ -2277,6 +2277,7 @@ async def admin_generate_gift_leads_sheet(
                 "location": p.location,
                 "headline": p.headline,
                 "activity_score": float(p.activity_score) if p.activity_score else 0,
+                "icp_reason": p.icp_reason or "",
                 "linkedin_url": p.linkedin_url,
             }
             for p in leads_list
