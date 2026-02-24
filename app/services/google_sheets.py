@@ -1,13 +1,15 @@
 """Google Sheets service for creating shareable gift leads spreadsheets."""
 
+import csv
+import io
 import json
 import logging
 from datetime import date
 from functools import lru_cache
 
-import gspread
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaInMemoryUpload
 
 from app.config import settings
 
@@ -18,13 +20,27 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
+HEADERS = [
+    "Name", "Title", "Company", "Location",
+    "Headline", "Activity Score", "ICP Reason", "LinkedIn",
+]
+
+FIELD_MAP = [
+    "full_name", "job_title", "company_name", "location",
+    "headline", "activity_score", "icp_reason", "linkedin_url",
+]
+
 
 class GoogleSheetsError(Exception):
     """Raised when a Google Sheets operation fails."""
 
 
 class GoogleSheetsService:
-    """Creates and shares Google Sheets for gift leads."""
+    """Creates and shares Google Sheets for gift leads.
+
+    Uploads CSV to a shared Drive folder and converts to Google Sheets.
+    The file counts against the folder owner's quota, not the service account's.
+    """
 
     def __init__(self) -> None:
         creds_json = settings.google_service_account_json
@@ -36,19 +52,22 @@ class GoogleSheetsService:
             json.loads(creds_json),
             scopes=SCOPES,
         )
-        self._gc = gspread.authorize(self._creds)
-        self._sheets_api = build("sheets", "v4", credentials=self._creds)
-        self._drive_api = build("drive", "v3", credentials=self._creds)
+        self._drive = build("drive", "v3", credentials=self._creds)
         self._folder_id = settings.google_drive_folder_id or None
+        if not self._folder_id:
+            raise GoogleSheetsError(
+                "GOOGLE_DRIVE_FOLDER_ID not set - required for sheet creation"
+            )
 
     def create_gift_leads_sheet(
         self,
         prospect_name: str,
         leads: list[dict],
     ) -> str:
-        """Create a Google Sheet with leads data, shared via link.
+        """Create a Google Sheet by uploading CSV and converting.
 
-        Uses Sheets API to create, then Drive API to move to folder and share.
+        Uploads a CSV to the shared Drive folder with conversion to
+        Google Sheets format. Quota is charged to the folder owner.
 
         Args:
             prospect_name: Name of the prospect receiving the leads.
@@ -63,73 +82,38 @@ class GoogleSheetsService:
         try:
             title = f"Leads for {prospect_name} - {date.today()}"
 
-            # Build full data including headers
-            headers = [
-                "Name", "Title", "Company", "Location",
-                "Headline", "Activity Score", "ICP Reason", "LinkedIn",
-            ]
-            rows = [headers]
+            # Build CSV in memory
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(HEADERS)
             for lead in leads:
-                rows.append([
-                    lead.get("full_name", ""),
-                    lead.get("job_title", ""),
-                    lead.get("company_name", ""),
-                    lead.get("location", ""),
-                    lead.get("headline", ""),
-                    str(lead.get("activity_score", "")),
-                    lead.get("icp_reason", ""),
-                    lead.get("linkedin_url", ""),
-                ])
+                writer.writerow([str(lead.get(f, "")) for f in FIELD_MAP])
 
-            # Create spreadsheet with data in one API call via Sheets API
-            body = {
-                "properties": {"title": title},
-                "sheets": [{
-                    "properties": {"title": "Leads"},
-                    "data": [{
-                        "startRow": 0,
-                        "startColumn": 0,
-                        "rowData": [
-                            {
-                                "values": [
-                                    {
-                                        "userEnteredValue": {"stringValue": cell},
-                                        **({"userEnteredFormat": {"textFormat": {"bold": True}}}
-                                           if row_idx == 0 else {}),
-                                    }
-                                    for cell in row
-                                ]
-                            }
-                            for row_idx, row in enumerate(rows)
-                        ],
-                    }],
-                }],
+            csv_bytes = buf.getvalue().encode("utf-8")
+
+            # Upload CSV to shared folder, converting to Google Sheets
+            file_metadata = {
+                "name": title,
+                "parents": [self._folder_id],
+                "mimeType": "application/vnd.google-apps.spreadsheet",
             }
+            media = MediaInMemoryUpload(
+                csv_bytes,
+                mimetype="text/csv",
+                resumable=False,
+            )
 
-            result = self._sheets_api.spreadsheets().create(body=body).execute()
-            spreadsheet_id = result["spreadsheetId"]
-            sheet_url = result["spreadsheetUrl"]
+            file = self._drive.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields="id, webViewLink",
+            ).execute()
 
-            # Move to shared folder if configured
-            if self._folder_id:
-                try:
-                    # Get current parent, move to target folder
-                    file = self._drive_api.files().get(
-                        fileId=spreadsheet_id, fields="parents"
-                    ).execute()
-                    prev_parents = ",".join(file.get("parents", []))
-                    self._drive_api.files().update(
-                        fileId=spreadsheet_id,
-                        addParents=self._folder_id,
-                        removeParents=prev_parents,
-                        fields="id, parents",
-                    ).execute()
-                except Exception as e:
-                    logger.warning(f"Could not move sheet to folder: {e}")
+            sheet_url = file.get("webViewLink", f"https://docs.google.com/spreadsheets/d/{file['id']}")
 
             # Share with anyone who has the link (viewer)
-            self._drive_api.permissions().create(
-                fileId=spreadsheet_id,
+            self._drive.permissions().create(
+                fileId=file["id"],
                 body={"type": "anyone", "role": "reader"},
                 fields="id",
             ).execute()
