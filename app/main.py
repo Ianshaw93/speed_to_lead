@@ -42,7 +42,6 @@ try:
     from app.routers.changelog import router as changelog_router
     from app.routers.pipelines import router as pipelines_router
     from app.routers.costs import router as costs_router
-    from app.routers.clients import router as clients_router
     logger.info("Routers imported")
 except Exception as e:
     logger.error(f"Import failed: {e}", exc_info=True)
@@ -85,7 +84,6 @@ app.include_router(engagement_router)
 app.include_router(changelog_router)
 app.include_router(pipelines_router)
 app.include_router(costs_router)
-app.include_router(clients_router)
 
 
 @app.middleware("http")
