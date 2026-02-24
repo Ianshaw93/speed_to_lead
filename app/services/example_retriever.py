@@ -215,7 +215,8 @@ def format_examples_for_prompt(examples: list[RetrievedExample]) -> str:
         return ""
 
     lines = [
-        "## Similar Past Conversations (for style reference — adapt, don't copy)\n"
+        "## Similar Past Conversations (style reference ONLY — do NOT copy questions or structure)\n"
+        "Use these to match TONE and LENGTH only. Ask DIFFERENT qualifying questions each time.\n"
     ]
 
     for i, ex in enumerate(examples, 1):
