@@ -15,7 +15,7 @@ logger.info("Starting app import...")
 
 try:
     from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
-    from sqlalchemy import select
+    from sqlalchemy import func, select
     logger.info("FastAPI and SQLAlchemy imported")
 
     from app.config import settings
@@ -2177,6 +2177,273 @@ async def verify_reply_capture(hours: int = 48) -> dict:
             "hours_since_latest_message": hours_since_latest,
             "warnings": warnings,
         }
+
+
+@app.post("/admin/gift-leads/generate-sheet")
+async def admin_generate_gift_leads_sheet(
+    prospect_name: str,
+    background_tasks: BackgroundTasks,
+) -> dict:
+    """Generate Google Sheet from existing DB leads and post to Slack with Send button.
+
+    Use this to recover gift leads that completed the pipeline but never
+    got the Sheet/Slack notification.
+
+    Query params:
+        prospect_name: Prospect name (fuzzy matched against pipeline_runs).
+    """
+    from sqlalchemy import or_
+
+    from app.services.google_sheets import get_google_sheets_service
+    from app.services.slack import get_slack_bot
+
+    async with async_session_factory() as session:
+        # Find the pipeline run
+        run_result = await session.execute(
+            select(PipelineRun)
+            .where(PipelineRun.prospect_name.ilike(f"%{prospect_name}%"))
+            .order_by(PipelineRun.cost_total.desc())  # prefer the real run
+            .limit(1)
+        )
+        pipeline_run = run_result.scalar_one_or_none()
+
+        if not pipeline_run:
+            raise HTTPException(404, f"No pipeline run found for '{prospect_name}'")
+
+        # Find the prospect record to get prospect_id
+        prospect_result = await session.execute(
+            select(Prospect).where(
+                Prospect.linkedin_url == pipeline_run.prospect_url
+            )
+        )
+        prospect = prospect_result.scalar_one_or_none()
+
+        if not prospect:
+            # Try matching by conversation
+            conv_result = await session.execute(
+                select(Conversation).where(
+                    Conversation.linkedin_profile_url == pipeline_run.prospect_url
+                )
+            )
+            conv = conv_result.scalar_one_or_none()
+            if not conv:
+                raise HTTPException(404, f"No prospect or conversation found for URL {pipeline_run.prospect_url}")
+            prospect_id = None
+            prospect_display_name = conv.lead_name
+        else:
+            prospect_id = prospect.id
+            prospect_display_name = prospect.full_name
+
+        # Find the ICP-matched leads from this pipeline run's time window
+        # Use a 2-hour window around the run's started_at
+        run_start = pipeline_run.started_at
+        window_start = run_start - timedelta(hours=1)
+        window_end = run_start + timedelta(hours=1)
+
+        leads_result = await session.execute(
+            select(Prospect)
+            .where(
+                Prospect.source_type == ProspectSource.COMPETITOR_POST,
+                Prospect.icp_match == True,
+                Prospect.created_at.between(window_start, window_end),
+            )
+            .order_by(Prospect.activity_score.desc().nullslast())
+        )
+        leads_list = leads_result.scalars().all()
+
+        if not leads_list:
+            raise HTTPException(404, f"No ICP-matched leads found for pipeline run (window: {window_start} to {window_end})")
+
+        leads = [
+            {
+                "full_name": p.full_name,
+                "job_title": p.job_title,
+                "company_name": p.company_name,
+                "location": p.location,
+                "headline": p.headline,
+                "activity_score": float(p.activity_score) if p.activity_score else 0,
+                "linkedin_url": p.linkedin_url,
+            }
+            for p in leads_list
+        ]
+
+    # Create Google Sheet
+    sheet_url = None
+    sheets_svc = get_google_sheets_service()
+    if sheets_svc:
+        try:
+            sheet_url = sheets_svc.create_gift_leads_sheet(
+                prospect_name=prospect_display_name,
+                leads=leads,
+            )
+        except Exception as e:
+            logger.error(f"Failed to create Google Sheet: {e}", exc_info=True)
+
+    # Post to Slack with Send button
+    slack_bot = get_slack_bot()
+    if prospect_id:
+        await slack_bot.send_gift_leads_results_with_send_button(
+            prospect_id=prospect_id,
+            prospect_name=prospect_display_name,
+            leads=leads,
+            pool_size=len(leads),
+            keywords=["(recovered from pipeline run)"],
+            sheet_url=sheet_url,
+        )
+    else:
+        # No prospect record - just post results without send button
+        from app.services.slack import get_slack_bot
+        await slack_bot.send_confirmation(
+            f"*Gift Leads for {prospect_display_name}* ({len(leads)} leads)\n"
+            + (f"<{sheet_url}|Google Sheet>\n" if sheet_url else "")
+            + "\n".join(
+                f"{i+1}. *{l['full_name']}* - {l['job_title']} @ {l['company_name']}"
+                for i, l in enumerate(leads)
+            )
+        )
+
+    return {
+        "prospect": prospect_display_name,
+        "pipeline_run_id": str(pipeline_run.id),
+        "leads_found": len(leads),
+        "sheet_url": sheet_url,
+        "posted_to_slack": True,
+        "cost_incurred": float(pipeline_run.cost_total) if pipeline_run.cost_total else 0,
+    }
+
+
+@app.post("/admin/gift-leads/trigger")
+async def admin_trigger_gift_leads(
+    prospect_name: str,
+    keywords: str,
+    background_tasks: BackgroundTasks,
+) -> dict:
+    """Trigger the gift leads flow for a prospect that has no pipeline run yet.
+
+    Searches DB pool by keywords, creates Google Sheet, posts to Slack.
+
+    Query params:
+        prospect_name: Prospect name (fuzzy matched against conversations).
+        keywords: Comma-separated keywords to search by.
+    """
+    from sqlalchemy import or_
+
+    from app.services.google_sheets import get_google_sheets_service
+    from app.services.slack import get_slack_bot
+
+    keyword_list = [k.strip() for k in keywords.split(",") if k.strip()]
+    if not keyword_list:
+        raise HTTPException(400, "No keywords provided")
+
+    async with async_session_factory() as session:
+        # Find the conversation
+        conv_result = await session.execute(
+            select(Conversation).where(
+                Conversation.lead_name.ilike(f"%{prospect_name}%")
+            ).order_by(Conversation.updated_at.desc())
+            .limit(1)
+        )
+        conv = conv_result.scalar_one_or_none()
+
+        if not conv:
+            raise HTTPException(404, f"No conversation found for '{prospect_name}'")
+
+        # Find prospect by linkedin URL
+        prospect_result = await session.execute(
+            select(Prospect).where(
+                Prospect.linkedin_url == conv.linkedin_profile_url
+            )
+        )
+        prospect = prospect_result.scalar_one_or_none()
+
+        # Search DB pool with keywords
+        conditions = []
+        for kw in keyword_list:
+            conditions.append(Prospect.job_title.ilike(f"%{kw}%"))
+            conditions.append(Prospect.headline.ilike(f"%{kw}%"))
+
+        leads_result = await session.execute(
+            select(Prospect)
+            .where(
+                or_(*conditions),
+                Prospect.activity_score.isnot(None),
+            )
+            .order_by(Prospect.activity_score.desc().nullslast())
+            .limit(15)
+        )
+        leads_list = leads_result.scalars().all()
+
+        pool_result = await session.execute(
+            select(func.count(Prospect.id)).where(
+                Prospect.activity_score.isnot(None)
+            )
+        )
+        pool_size = pool_result.scalar() or 0
+
+    leads = [
+        {
+            "full_name": p.full_name,
+            "job_title": p.job_title,
+            "company_name": p.company_name,
+            "location": p.location,
+            "headline": p.headline,
+            "activity_score": float(p.activity_score) if p.activity_score else 0,
+            "linkedin_url": p.linkedin_url,
+        }
+        for p in leads_list
+    ]
+
+    if not leads:
+        return {
+            "prospect": conv.lead_name,
+            "leads_found": 0,
+            "pool_size": pool_size,
+            "keywords": keyword_list,
+            "message": "No matching leads in DB pool. Need to run full pipeline.",
+        }
+
+    # Create Google Sheet
+    sheet_url = None
+    sheets_svc = get_google_sheets_service()
+    if sheets_svc:
+        try:
+            sheet_url = sheets_svc.create_gift_leads_sheet(
+                prospect_name=conv.lead_name,
+                leads=leads,
+            )
+        except Exception as e:
+            logger.error(f"Failed to create Google Sheet: {e}", exc_info=True)
+
+    # Post to Slack with Send button
+    slack_bot = get_slack_bot()
+    prospect_id = prospect.id if prospect else None
+    if prospect_id:
+        await slack_bot.send_gift_leads_results_with_send_button(
+            prospect_id=prospect_id,
+            prospect_name=conv.lead_name,
+            leads=leads,
+            pool_size=pool_size,
+            keywords=keyword_list,
+            sheet_url=sheet_url,
+        )
+    else:
+        await slack_bot.send_confirmation(
+            f"*Gift Leads for {conv.lead_name}* ({len(leads)} leads)\n"
+            + (f"<{sheet_url}|Google Sheet>\n" if sheet_url else "")
+            + "\n".join(
+                f"{i+1}. *{l['full_name']}* - {l['job_title']} @ {l['company_name']}"
+                for i, l in enumerate(leads)
+            )
+        )
+
+    return {
+        "prospect": conv.lead_name,
+        "leads_found": len(leads),
+        "pool_size": pool_size,
+        "keywords": keyword_list,
+        "sheet_url": sheet_url,
+        "posted_to_slack": True,
+    }
 
 
 @app.get("/buying-signal/log")
