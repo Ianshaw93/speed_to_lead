@@ -7,7 +7,8 @@ import logging
 from datetime import date
 from functools import lru_cache
 
-from google.oauth2.service_account import Credentials
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaInMemoryUpload
 
@@ -38,36 +39,43 @@ class GoogleSheetsError(Exception):
 class GoogleSheetsService:
     """Creates and shares Google Sheets for gift leads.
 
-    Uploads CSV to a shared Drive folder and converts to Google Sheets.
-    The file counts against the folder owner's quota, not the service account's.
+    Uses OAuth refresh token from a personal Google account to avoid
+    the 0-byte Drive storage quota on service accounts.
     """
 
     def __init__(self) -> None:
-        creds_json = settings.google_service_account_json
-        if not creds_json:
+        refresh_token = settings.google_oauth_refresh_token
+        client_id = settings.google_oauth_client_id
+        client_secret = settings.google_oauth_client_secret
+        if not all([refresh_token, client_id, client_secret]):
             raise GoogleSheetsError(
-                "GOOGLE_SERVICE_ACCOUNT_JSON environment variable not set"
+                "Google OAuth credentials not configured "
+                "(GOOGLE_OAUTH_REFRESH_TOKEN, GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET)"
             )
-        self._creds = Credentials.from_service_account_info(
-            json.loads(creds_json),
+
+        self._creds = Credentials(
+            token=None,
+            refresh_token=refresh_token,
+            client_id=client_id,
+            client_secret=client_secret,
+            token_uri="https://oauth2.googleapis.com/token",
             scopes=SCOPES,
         )
+        self._creds.refresh(Request())
         self._drive = build("drive", "v3", credentials=self._creds)
         self._folder_id = settings.google_drive_folder_id or None
-        if not self._folder_id:
-            raise GoogleSheetsError(
-                "GOOGLE_DRIVE_FOLDER_ID not set - required for sheet creation"
-            )
+
+    def _ensure_valid_creds(self) -> None:
+        """Refresh the token if expired."""
+        if not self._creds.valid:
+            self._creds.refresh(Request())
 
     def create_gift_leads_sheet(
         self,
         prospect_name: str,
         leads: list[dict],
     ) -> str:
-        """Create a Google Sheet by uploading CSV and converting.
-
-        Uploads a CSV to the shared Drive folder with conversion to
-        Google Sheets format. Quota is charged to the folder owner.
+        """Create a Google Sheet by uploading CSV with conversion.
 
         Args:
             prospect_name: Name of the prospect receiving the leads.
@@ -80,6 +88,8 @@ class GoogleSheetsService:
             GoogleSheetsError: If creation fails.
         """
         try:
+            self._ensure_valid_creds()
+
             title = f"Leads for {prospect_name} - {date.today()}"
 
             # Build CSV in memory
@@ -87,20 +97,20 @@ class GoogleSheetsService:
             writer = csv.writer(buf)
             writer.writerow(HEADERS)
             for lead in leads:
-                writer.writerow([str(lead.get(f, "")) for f in FIELD_MAP])
+                writer.writerow([str(lead.get(f, "") or "") for f in FIELD_MAP])
 
             csv_bytes = buf.getvalue().encode("utf-8")
 
-            # Upload CSV to shared folder, converting to Google Sheets
+            # Upload CSV to folder, converting to Google Sheets
             file_metadata = {
                 "name": title,
-                "parents": [self._folder_id],
                 "mimeType": "application/vnd.google-apps.spreadsheet",
             }
+            if self._folder_id:
+                file_metadata["parents"] = [self._folder_id]
+
             media = MediaInMemoryUpload(
-                csv_bytes,
-                mimetype="text/csv",
-                resumable=False,
+                csv_bytes, mimetype="text/csv", resumable=False,
             )
 
             file = self._drive.files().create(
@@ -109,7 +119,10 @@ class GoogleSheetsService:
                 fields="id, webViewLink",
             ).execute()
 
-            sheet_url = file.get("webViewLink", f"https://docs.google.com/spreadsheets/d/{file['id']}")
+            sheet_url = file.get(
+                "webViewLink",
+                f"https://docs.google.com/spreadsheets/d/{file['id']}",
+            )
 
             # Share with anyone who has the link (viewer)
             self._drive.permissions().create(
@@ -130,6 +143,6 @@ def get_google_sheets_service() -> GoogleSheetsService | None:
     """Get cached GoogleSheetsService instance, or None if not configured."""
     try:
         return GoogleSheetsService()
-    except GoogleSheetsError:
-        logger.warning("Google Sheets not configured - gift leads will use text-only DMs")
+    except GoogleSheetsError as e:
+        logger.warning(f"Google Sheets not configured - {e}")
         return None
