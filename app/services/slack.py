@@ -1,5 +1,6 @@
 """Slack service for sending draft notifications and reports."""
 
+import json
 import logging
 import re
 import uuid
@@ -1883,6 +1884,103 @@ class SlackBot:
         except Exception as e:
             raise SlackError(f"Failed to send gift leads results: {e}") from e
 
+    async def send_gift_leads_ready(
+        self,
+        prospect_id: uuid.UUID | None,
+        prospect_name: str,
+        lead_count: int,
+        icp: str,
+        context: str,
+        draft_dm: str,
+        sheet_url: str | None = None,
+        conversation_id: uuid.UUID | None = None,
+    ) -> str:
+        """Post gift leads ready message with Send/Edit buttons.
+
+        Shows the draft DM and provides buttons to send as-is or edit first.
+
+        Args:
+            prospect_id: The prospect to send leads to (or None).
+            prospect_name: Name of the prospect.
+            lead_count: Number of leads found.
+            icp: ICP description.
+            context: Last message context from the prospect.
+            draft_dm: Pre-composed DM text.
+            sheet_url: Google Sheet URL (if created).
+            conversation_id: Fallback conversation ID when no prospect record.
+
+        Returns:
+            The Slack message timestamp.
+        """
+        try:
+            import json as _json
+
+            sheet_text = f"\n*Sheet:* <{sheet_url}|Open Google Sheet>" if sheet_url else ""
+
+            button_value = _json.dumps({
+                "prospect_id": str(prospect_id) if prospect_id else "",
+                "conversation_id": str(conversation_id) if conversation_id else "",
+                "sheet_url": sheet_url,
+                "draft_dm": draft_dm,
+            })
+
+            blocks = [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": f"Gift Leads Ready: {prospect_name}", "emoji": True},
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": (
+                            f"*ICP:* {icp}\n"
+                            f"*Leads:* {lead_count}"
+                            f"{sheet_text}\n"
+                            f"*Context:* {context}"
+                        ),
+                    },
+                },
+                {"type": "divider"},
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*Draft DM:*\n>>>{draft_dm}",
+                    },
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Send as is", "emoji": True},
+                            "style": "primary",
+                            "action_id": "send_gift_leads_as_is",
+                            "value": button_value,
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Edit & Send", "emoji": True},
+                            "action_id": "edit_gift_leads_dm",
+                            "value": button_value,
+                        },
+                    ],
+                },
+            ]
+
+            response = await self._client.chat_postMessage(
+                channel=self._channel_id,
+                blocks=blocks,
+                text=f"Gift Leads Ready: {prospect_name} ({lead_count} leads)",
+            )
+            return response["ts"]
+
+        except SlackApiError as e:
+            raise SlackError(f"Failed to send gift leads ready: {e.response['error']}") from e
+        except Exception as e:
+            raise SlackError(f"Failed to send gift leads ready: {e}") from e
+
     async def send_gift_leads_auto_sent_notification(
         self,
         prospect_name: str,
@@ -1933,17 +2031,19 @@ class SlackBot:
     async def open_send_gift_leads_dm_modal(
         self,
         trigger_id: str,
-        prospect_id: uuid.UUID,
+        prospect_id: uuid.UUID | None,
         prospect_name: str,
         draft_dm: str,
+        conversation_id: uuid.UUID | None = None,
     ) -> None:
         """Open modal with pre-formatted LinkedIn DM containing leads list.
 
         Args:
             trigger_id: Slack trigger ID from the interaction.
-            prospect_id: The prospect to send to.
+            prospect_id: The prospect to send to (or None if using conversation_id).
             prospect_name: Name for display.
             draft_dm: Pre-formatted DM text (editable).
+            conversation_id: Fallback conversation ID when no prospect record exists.
 
         Raises:
             SlackError: If opening modal fails.
@@ -1977,7 +2077,10 @@ class SlackBot:
                             "label": {"type": "plain_text", "text": "LinkedIn Message"},
                         },
                     ],
-                    "private_metadata": str(prospect_id),
+                    "private_metadata": json.dumps({
+                        "prospect_id": str(prospect_id) if prospect_id else "",
+                        "conversation_id": str(conversation_id) if conversation_id else "",
+                    }),
                 },
             )
         except SlackApiError as e:

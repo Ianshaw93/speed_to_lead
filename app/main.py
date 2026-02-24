@@ -42,6 +42,7 @@ try:
     from app.routers.changelog import router as changelog_router
     from app.routers.pipelines import router as pipelines_router
     from app.routers.costs import router as costs_router
+    from app.routers.clients import router as clients_router
     logger.info("Routers imported")
 except Exception as e:
     logger.error(f"Import failed: {e}", exc_info=True)
@@ -84,6 +85,7 @@ app.include_router(engagement_router)
 app.include_router(changelog_router)
 app.include_router(pipelines_router)
 app.include_router(costs_router)
+app.include_router(clients_router)
 
 
 @app.middleware("http")
@@ -2295,20 +2297,36 @@ async def admin_generate_gift_leads_sheet(
         except Exception as e:
             logger.error(f"Failed to create Google Sheet: {e}", exc_info=True)
 
-    # Post to Slack with Send button
+    # Compose draft DM
+    first_name = prospect_display_name.split()[0] if prospect_display_name else "there"
+    if sheet_url:
+        draft_dm = (
+            f"Hey {first_name}, I pulled together some people in your space "
+            f"that might be worth connecting with:\n\n"
+            f"{sheet_url}\n\n"
+            f"Let me know if any of these are useful!"
+        )
+    else:
+        draft_dm = (
+            f"Hey {first_name}, I pulled together {len(leads)} people in your space "
+            f"that might be worth connecting with. Let me know if you'd like the list!"
+        )
+
+    icp_desc = pipeline_run.icp_description or "(unknown ICP)"
+
+    # Post to Slack with Send/Edit buttons
     slack_bot = get_slack_bot()
     if prospect_id:
-        await slack_bot.send_gift_leads_results_with_send_button(
+        await slack_bot.send_gift_leads_ready(
             prospect_id=prospect_id,
             prospect_name=prospect_display_name,
-            leads=leads,
-            pool_size=len(leads),
-            keywords=["(recovered from pipeline run)"],
+            lead_count=len(leads),
+            icp=icp_desc,
+            context="Recovered from pipeline run",
+            draft_dm=draft_dm,
             sheet_url=sheet_url,
         )
     else:
-        # No prospect record - just post results without send button
-        from app.services.slack import get_slack_bot
         await slack_bot.send_confirmation(
             f"*Gift Leads for {prospect_display_name}* ({len(leads)} leads)\n"
             + (f"<{sheet_url}|Google Sheet>\n" if sheet_url else "")
@@ -2430,16 +2448,32 @@ async def admin_trigger_gift_leads(
         except Exception as e:
             logger.error(f"Failed to create Google Sheet: {e}", exc_info=True)
 
-    # Post to Slack with Send button
+    # Compose draft DM
+    first_name = conv.lead_name.split()[0] if conv.lead_name else "there"
+    if sheet_url:
+        draft_dm = (
+            f"Hey {first_name}, I pulled together some people in your space "
+            f"that might be worth connecting with:\n\n"
+            f"{sheet_url}\n\n"
+            f"Let me know if any of these are useful!"
+        )
+    else:
+        draft_dm = (
+            f"Hey {first_name}, I pulled together {len(leads)} people in your space "
+            f"that might be worth connecting with. Let me know if you'd like the list!"
+        )
+
+    # Post to Slack with Send/Edit buttons
     slack_bot = get_slack_bot()
     prospect_id = prospect.id if prospect else None
     if prospect_id:
-        await slack_bot.send_gift_leads_results_with_send_button(
+        await slack_bot.send_gift_leads_ready(
             prospect_id=prospect_id,
             prospect_name=conv.lead_name,
-            leads=leads,
-            pool_size=pool_size,
-            keywords=keyword_list,
+            lead_count=len(leads),
+            icp=", ".join(keyword_list),
+            context="DB pool keyword search",
+            draft_dm=draft_dm,
             sheet_url=sheet_url,
         )
     else:
