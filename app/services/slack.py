@@ -2035,6 +2035,7 @@ class SlackBot:
         prospect_name: str,
         draft_dm: str,
         conversation_id: uuid.UUID | None = None,
+        message_ts: str | None = None,
     ) -> None:
         """Open modal with pre-formatted LinkedIn DM containing leads list.
 
@@ -2044,6 +2045,7 @@ class SlackBot:
             prospect_name: Name for display.
             draft_dm: Pre-formatted DM text (editable).
             conversation_id: Fallback conversation ID when no prospect record exists.
+            message_ts: Original Slack message ts (to remove buttons after send).
 
         Raises:
             SlackError: If opening modal fails.
@@ -2080,6 +2082,7 @@ class SlackBot:
                     "private_metadata": json.dumps({
                         "prospect_id": str(prospect_id) if prospect_id else "",
                         "conversation_id": str(conversation_id) if conversation_id else "",
+                        "message_ts": message_ts or "",
                     }),
                 },
             )

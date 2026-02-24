@@ -1972,6 +1972,7 @@ async def handle_send_gift_leads_dm(
     trigger_id: str,
     sheet_url: str | None = None,
     prefill_dm: str | None = None,
+    message_ts: str | None = None,
 ) -> None:
     """Handle send_gift_leads_dm button - open editable DM modal.
 
@@ -1983,6 +1984,7 @@ async def handle_send_gift_leads_dm(
         trigger_id: Slack trigger ID for opening modal.
         sheet_url: Google Sheet URL from the results step (optional).
         prefill_dm: Pre-composed DM text to pre-fill the modal (optional).
+        message_ts: Original Slack message ts (passed to modal for button removal).
     """
     try:
         async with async_session_factory() as session:
@@ -2047,6 +2049,7 @@ async def handle_send_gift_leads_dm(
                 prospect_id=prospect_id,
                 prospect_name=prospect_name,
                 draft_dm=draft_dm,
+                message_ts=message_ts,
             )
 
     except Exception as e:
@@ -2059,15 +2062,55 @@ async def _process_send_gift_leads_dm(
     prospect_id: uuid.UUID | None,
     message_text: str,
     conversation_id: uuid.UUID | None = None,
+    message_ts: str | None = None,
 ) -> None:
     """Background task to send gift leads DM via HeyReach.
 
     Uses prospect_id if available, otherwise falls back to conversation_id.
+    After sending, removes buttons from the original Slack message and
+    offers follow-up configuration.
     """
     if prospect_id:
         await _send_pitched_message_now(prospect_id, message_text)
+        # Remove buttons and show follow-up options
+        if message_ts:
+            slack_bot = get_slack_bot()
+            await slack_bot.remove_buttons(
+                message_ts=message_ts,
+                final_text="Gift leads DM sent successfully!",
+            )
+            # Find conversation_id from prospect for follow-up config
+            if not conversation_id:
+                try:
+                    async with async_session_factory() as session:
+                        result = await session.execute(
+                            select(Prospect).where(Prospect.id == prospect_id)
+                        )
+                        prospect = result.scalar_one_or_none()
+                        if prospect and prospect.conversation_id:
+                            conversation_id = prospect.conversation_id
+                except Exception:
+                    pass
+            if conversation_id:
+                lead_name = "prospect"
+                try:
+                    async with async_session_factory() as session:
+                        result = await session.execute(
+                            select(Conversation).where(Conversation.id == conversation_id)
+                        )
+                        conv = result.scalar_one_or_none()
+                        if conv:
+                            lead_name = conv.lead_name or "prospect"
+                except Exception:
+                    pass
+                await slack_bot.send_follow_up_config_message(
+                    conversation_id=conversation_id,
+                    lead_name=lead_name,
+                )
     elif conversation_id:
-        await _send_message_via_conversation_id(conversation_id, message_text)
+        await _send_message_via_conversation_id(
+            conversation_id, message_text, message_ts=message_ts,
+        )
     else:
         logger.error("Neither prospect_id nor conversation_id provided for gift leads DM")
         slack_bot = get_slack_bot()
@@ -2077,10 +2120,12 @@ async def _process_send_gift_leads_dm(
 async def _send_message_via_conversation_id(
     conversation_id: uuid.UUID,
     message_text: str,
+    message_ts: str | None = None,
 ) -> None:
     """Send a message via HeyReach using conversation_id directly.
 
-    Fallback for when no prospect record exists.
+    Fallback for when no prospect record exists. After sending, removes
+    buttons from original message and offers follow-up configuration.
     """
     try:
         async with async_session_factory() as session:
@@ -2092,16 +2137,20 @@ async def _send_message_via_conversation_id(
             if not conversation:
                 logger.error(f"Conversation {conversation_id} not found")
                 slack_bot = get_slack_bot()
-                await slack_bot.send_confirmation(f"Error: Conversation {conversation_id} not found.")
+                if message_ts:
+                    await slack_bot.remove_buttons(message_ts=message_ts, final_text="Error: Conversation not found.")
+                else:
+                    await slack_bot.send_confirmation(f"Error: Conversation {conversation_id} not found.")
                 return
 
             if not conversation.heyreach_lead_id or not conversation.linkedin_account_id:
                 logger.error(f"Conversation {conversation_id} missing HeyReach data")
                 slack_bot = get_slack_bot()
-                await slack_bot.send_confirmation(
-                    f"Cannot send to {conversation.lead_name or 'prospect'}: "
-                    "missing HeyReach conversation data."
-                )
+                msg = f"Cannot send to {conversation.lead_name or 'prospect'}: missing HeyReach conversation data."
+                if message_ts:
+                    await slack_bot.remove_buttons(message_ts=message_ts, final_text=msg)
+                else:
+                    await slack_bot.send_confirmation(msg)
                 return
 
             # Send via HeyReach
@@ -2124,26 +2173,45 @@ async def _send_message_via_conversation_id(
             conversation.funnel_stage = FunnelStage.PITCHED
             await session.commit()
 
+            lead_name = conversation.lead_name or "prospect"
+
+            # Remove buttons from original message and show follow-up options
             slack_bot = get_slack_bot()
-            await slack_bot.send_confirmation(
-                f"Message sent to {conversation.lead_name or 'prospect'}."
-            )
+            if message_ts:
+                await slack_bot.remove_buttons(
+                    message_ts=message_ts,
+                    final_text=f"Gift leads DM sent to {lead_name}!",
+                )
+                await slack_bot.send_follow_up_config_message(
+                    conversation_id=conversation.id,
+                    lead_name=lead_name,
+                )
+            else:
+                await slack_bot.send_confirmation(f"Message sent to {lead_name}.")
+
             logger.info(f"Sent gift leads DM via conversation {conversation_id}")
 
     except HeyReachError as e:
         logger.error(f"HeyReach error sending via conversation: {e}")
         slack_bot = get_slack_bot()
-        await slack_bot.send_confirmation(f"Failed to send: {e}")
+        if message_ts:
+            await slack_bot.remove_buttons(message_ts=message_ts, final_text=f"Failed to send: {e}")
+        else:
+            await slack_bot.send_confirmation(f"Failed to send: {e}")
     except Exception as e:
         logger.error(f"Error sending via conversation: {e}", exc_info=True)
         slack_bot = get_slack_bot()
-        await slack_bot.send_confirmation(f"Error: {e}")
+        if message_ts:
+            await slack_bot.remove_buttons(message_ts=message_ts, final_text=f"Error: {e}")
+        else:
+            await slack_bot.send_confirmation(f"Error: {e}")
 
 
 async def _handle_edit_gift_leads_via_conversation(
     conversation_id: uuid.UUID,
     trigger_id: str,
     draft_dm: str,
+    message_ts: str | None = None,
 ) -> None:
     """Open edit modal for gift leads DM using conversation_id (no prospect record)."""
     try:
@@ -2161,6 +2229,7 @@ async def _handle_edit_gift_leads_via_conversation(
             prospect_name=name,
             draft_dm=draft_dm,
             conversation_id=conversation_id,
+            message_ts=message_ts,
         )
     except Exception as e:
         logger.error(f"Error opening edit modal via conversation: {e}", exc_info=True)
@@ -2629,20 +2698,15 @@ async def slack_interactions(
                 elif conversation_id and draft_dm:
                     # No prospect record - send directly via conversation
                     background_tasks.add_task(
-                        _send_message_via_conversation_id, conversation_id, draft_dm
+                        _send_message_via_conversation_id, conversation_id, draft_dm,
+                        message_ts,
                     )
-                    slack_bot = get_slack_bot()
-                    await slack_bot.send_confirmation("Sending gift leads DM...")
             elif action_id == "send_gift_leads_as_is":
                 # Send the draft DM immediately without editing
                 if draft_dm:
                     background_tasks.add_task(
                         _process_send_gift_leads_dm, prospect_id, draft_dm,
-                        conversation_id,
-                    )
-                    slack_bot = get_slack_bot()
-                    await slack_bot.send_confirmation(
-                        "Sending gift leads DM to prospect..."
+                        conversation_id, message_ts,
                     )
                 elif prospect_id:
                     # Fallback to modal if no draft in value
@@ -2651,12 +2715,13 @@ async def slack_interactions(
                 if prospect_id:
                     # Open modal pre-filled with the draft DM for editing
                     await handle_send_gift_leads_dm(
-                        prospect_id, trigger_id, sheet_url, prefill_dm=draft_dm
+                        prospect_id, trigger_id, sheet_url, prefill_dm=draft_dm,
+                        message_ts=message_ts,
                     )
                 elif conversation_id and draft_dm:
                     # Open modal for conversation-based send
                     await _handle_edit_gift_leads_via_conversation(
-                        conversation_id, trigger_id, draft_dm
+                        conversation_id, trigger_id, draft_dm, message_ts=message_ts,
                     )
             return {"ok": True}
 
@@ -2896,6 +2961,7 @@ async def slack_interactions(
         elif callback_id == "send_gift_leads_dm_submit":
             prospect_id = None
             conversation_id = None
+            orig_message_ts = None
             try:
                 meta = json.loads(private_metadata)
                 pid = meta.get("prospect_id", "")
@@ -2904,6 +2970,7 @@ async def slack_interactions(
                 cid = meta.get("conversation_id", "")
                 if cid:
                     conversation_id = uuid.UUID(cid)
+                orig_message_ts = meta.get("message_ts", "")
             except (json.JSONDecodeError, TypeError):
                 # Legacy format: plain UUID string
                 try:
@@ -2921,7 +2988,7 @@ async def slack_interactions(
             if message_text:
                 background_tasks.add_task(
                     _process_send_gift_leads_dm, prospect_id, message_text,
-                    conversation_id,
+                    conversation_id, orig_message_ts or None,
                 )
 
     return {"ok": True}
