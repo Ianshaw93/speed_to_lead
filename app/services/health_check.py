@@ -234,10 +234,10 @@ async def check_stale_pending_drafts(session: AsyncSession) -> CheckResult:
     )
     stale = result.scalar() or 0
 
-    if stale < 4:
+    if stale < 10:
         return CheckResult("stale_pending_drafts", CheckStatus.OK, f"{stale} stale pending drafts")
 
-    if stale <= 10:
+    if stale <= 30:
         return CheckResult("stale_pending_drafts", CheckStatus.WARNING, f"{stale} pending drafts older than 24h")
 
     return CheckResult("stale_pending_drafts", CheckStatus.CRITICAL, f"{stale} pending drafts older than 24h")

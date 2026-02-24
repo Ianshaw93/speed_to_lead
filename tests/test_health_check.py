@@ -254,7 +254,7 @@ class TestCheckStalePendingDrafts:
     async def test_warning_moderate_stale(self, test_db_session: AsyncSession):
         conv = _make_conversation(test_db_session)
         await test_db_session.flush()
-        for _ in range(6):
+        for _ in range(15):
             _make_draft(test_db_session, conv,
                         status=DraftStatus.PENDING,
                         created_at=datetime.now(timezone.utc) - timedelta(hours=30))
@@ -267,7 +267,7 @@ class TestCheckStalePendingDrafts:
     async def test_critical_many_stale(self, test_db_session: AsyncSession):
         conv = _make_conversation(test_db_session)
         await test_db_session.flush()
-        for _ in range(12):
+        for _ in range(35):
             _make_draft(test_db_session, conv,
                         status=DraftStatus.PENDING,
                         created_at=datetime.now(timezone.utc) - timedelta(hours=30))
