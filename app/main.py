@@ -2211,6 +2211,8 @@ async def admin_generate_gift_leads_sheet(
             raise HTTPException(404, f"No pipeline run found for '{prospect_name}'")
 
         # Find the prospect record to get prospect_id
+        # Try exact URL match first, then try conversation URL, then name match
+        prospect = None
         prospect_result = await session.execute(
             select(Prospect).where(
                 Prospect.linkedin_url == pipeline_run.prospect_url
@@ -2218,21 +2220,34 @@ async def admin_generate_gift_leads_sheet(
         )
         prospect = prospect_result.scalar_one_or_none()
 
+        # Try conversation match by URL or name
+        conv = None
         if not prospect:
-            # Try matching by conversation
             conv_result = await session.execute(
                 select(Conversation).where(
-                    Conversation.linkedin_profile_url == pipeline_run.prospect_url
-                )
+                    or_(
+                        Conversation.linkedin_profile_url == pipeline_run.prospect_url,
+                        Conversation.lead_name.ilike(f"%{prospect_name}%"),
+                    )
+                ).order_by(Conversation.updated_at.desc())
+                .limit(1)
             )
             conv = conv_result.scalar_one_or_none()
-            if not conv:
-                raise HTTPException(404, f"No prospect or conversation found for URL {pipeline_run.prospect_url}")
-            prospect_id = None
-            prospect_display_name = conv.lead_name
-        else:
-            prospect_id = prospect.id
-            prospect_display_name = prospect.full_name
+
+            # If we found a conversation, try to find prospect by that URL
+            if conv:
+                prospect_result = await session.execute(
+                    select(Prospect).where(
+                        Prospect.linkedin_url == conv.linkedin_profile_url
+                    )
+                )
+                prospect = prospect_result.scalar_one_or_none()
+
+        if not prospect and not conv:
+            raise HTTPException(404, f"No prospect or conversation found for '{prospect_name}'")
+
+        prospect_id = prospect.id if prospect else None
+        prospect_display_name = (prospect.full_name if prospect else conv.lead_name) if prospect or conv else pipeline_run.prospect_name
 
         # Find the ICP-matched leads from this pipeline run's time window
         # Use a 2-hour window around the run's started_at
