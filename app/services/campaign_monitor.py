@@ -98,6 +98,9 @@ async def get_daily_connection_stats() -> list[int]:
         resp.raise_for_status()
         data = resp.json()
 
+    logger.info(f"GetOverallStats raw response keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
+    logger.info(f"GetOverallStats raw response (truncated): {str(data)[:1000]}")
+
     entries = data.get("connectionsSent", [])
     return [entry.get("count", 0) for entry in entries]
 
