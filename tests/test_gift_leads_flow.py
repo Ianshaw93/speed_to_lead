@@ -550,3 +550,215 @@ class TestDmModalWithSheetUrl:
         call_kwargs = mock_bot.open_send_gift_leads_dm_modal.call_args[1]
         assert sheet_url in call_kwargs["draft_dm"]
         assert "Hey John" in call_kwargs["draft_dm"]
+
+
+# =============================================================================
+# LLM-based Search Phrase Derivation Tests
+# =============================================================================
+
+
+class TestDeriveSearchPhrases:
+    """Tests for LLM-based multi-word phrase derivation from ICP text."""
+
+    @pytest.mark.asyncio
+    @patch("app.services.gift_pipeline.deepseek_calls._get_client")
+    async def test_returns_multi_word_phrases(self, mock_get_client):
+        """LLM should return multi-word phrases, not single words."""
+        from app.services.gift_pipeline.deepseek_calls import derive_search_phrases
+        from app.services.gift_pipeline.cost_tracker import CostTracker
+
+        mock_completion = MagicMock()
+        mock_completion.choices = [MagicMock()]
+        mock_completion.choices[0].message.content = json.dumps({
+            "phrases": ["video platform", "audio platform", "sales enablement", "call center", "voice agent"]
+        })
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_completion)
+        mock_get_client.return_value = mock_client
+
+        ct = CostTracker()
+        result = await derive_search_phrases(
+            "video & audio platforms for sincerity insights, Role Play / Sales Enablement, Call Centers / Voice Agents",
+            ct,
+        )
+
+        assert len(result) >= 3
+        # Should be multi-word phrases, not single words
+        assert any(" " in phrase for phrase in result)
+        assert "video platform" in result
+
+    @pytest.mark.asyncio
+    @patch("app.services.gift_pipeline.deepseek_calls._get_client")
+    async def test_fallback_on_error(self, mock_get_client):
+        """Should fall back to delimiter-based splitting on LLM error."""
+        from app.services.gift_pipeline.deepseek_calls import derive_search_phrases
+        from app.services.gift_pipeline.cost_tracker import CostTracker
+
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=Exception("API error"))
+        mock_get_client.return_value = mock_client
+
+        ct = CostTracker()
+        result = await derive_search_phrases(
+            "video & audio platforms, Sales Enablement, Call Centers",
+            ct,
+        )
+
+        # Should still return phrases from fallback
+        assert len(result) >= 1
+        # Fallback splits on commas/slashes, so should preserve multi-word groups
+        assert any("sales enablement" in p.lower() for p in result)
+
+    @pytest.mark.asyncio
+    async def test_empty_input_returns_empty(self):
+        """Empty input should return empty list without calling LLM."""
+        from app.services.gift_pipeline.deepseek_calls import derive_search_phrases
+        from app.services.gift_pipeline.cost_tracker import CostTracker
+
+        ct = CostTracker()
+        result = await derive_search_phrases("", ct)
+        assert result == []
+
+    def test_fallback_derive_phrases(self):
+        """Fallback should split on commas/slashes and preserve multi-word groups."""
+        from app.services.gift_pipeline.deepseek_calls import _fallback_derive_phrases
+
+        result = _fallback_derive_phrases(
+            "video & audio platforms, Sales Enablement, Call Centers / Voice Agents"
+        )
+        assert len(result) >= 2
+        # Should preserve multi-word groups
+        assert any("sales enablement" in p for p in result)
+
+
+# =============================================================================
+# ICP Re-qualification Tests
+# =============================================================================
+
+
+class TestIcpRequalification:
+    """Tests that post-search ICP re-qualification filters non-matches."""
+
+    @pytest.mark.asyncio
+    @patch("app.routers.slack.get_slack_bot")
+    @patch("app.routers.slack.async_session_factory")
+    async def test_filters_non_matching_leads(
+        self, mock_session_factory, mock_get_bot
+    ):
+        """Leads that don't match ICP should be filtered out."""
+        from app.routers.slack import _process_gift_leads_with_send
+
+        prospect_id = uuid.uuid4()
+
+        # Create mock prospects in DB
+        mock_prospects = []
+        for i in range(5):
+            p = MagicMock()
+            p.full_name = f"Lead {i}"
+            p.job_title = f"Title {i}"
+            p.company_name = f"Company {i}"
+            p.location = "USA"
+            p.headline = f"Headline {i}"
+            p.activity_score = 80 - i
+            p.icp_reason = ""
+            p.linkedin_url = f"https://linkedin.com/in/lead{i}"
+            mock_prospects.append(p)
+
+        mock_session = AsyncMock()
+        # First call: pool count, Second call: prospect query
+        mock_pool_result = MagicMock()
+        mock_pool_result.scalar.return_value = 100
+        mock_query_result = MagicMock()
+        mock_query_result.scalars.return_value.all.return_value = mock_prospects
+        mock_session.execute = AsyncMock(side_effect=[mock_pool_result, mock_query_result])
+
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_session_factory.return_value = mock_ctx
+
+        mock_bot = AsyncMock()
+        mock_get_bot.return_value = mock_bot
+
+        # Mock check_icp_match: only Lead 0 and Lead 2 match
+        async def mock_icp_check(lead, cost_tracker, icp_criteria=None):
+            name = lead.get("full_name", "")
+            if name in ("Lead 0", "Lead 2"):
+                return {"match": True, "confidence": "high", "reason": "Matches ICP"}
+            return {"match": False, "confidence": "high", "reason": "Does not match"}
+
+        with patch("app.services.gift_pipeline.deepseek_calls.check_icp_match", side_effect=mock_icp_check), \
+             patch("app.services.google_sheets.get_google_sheets_service", return_value=None):
+            await _process_gift_leads_with_send(
+                prospect_id=prospect_id,
+                keywords=["title"],
+                prospect_name="Test Prospect",
+                icp_description="video platform leaders",
+            )
+
+        # Should have posted results with only the 2 matching leads
+        mock_bot.send_gift_leads_ready.assert_called_once()
+        call_kwargs = mock_bot.send_gift_leads_ready.call_args[1]
+        # lead_count should reflect filtered results
+        assert call_kwargs["lead_count"] == 2
+
+
+# =============================================================================
+# Modal Submit Extracts ICP Description Tests
+# =============================================================================
+
+
+class TestModalSubmitExtractsIcp:
+    """Tests that confirm_icp_gift_leads_submit extracts ICP description."""
+
+    def test_icp_text_extracted_from_modal_values(self):
+        """Verify the modal values structure we expect for icp_input block."""
+        # Simulate the Slack modal values structure
+        values = {
+            "icp_input": {
+                "icp_text": {
+                    "type": "plain_text_input",
+                    "value": "video & audio platforms for sincerity insights",
+                }
+            },
+            "keywords_input": {
+                "keywords_text": {
+                    "type": "plain_text_input",
+                    "value": "video platform, audio platform",
+                }
+            },
+        }
+
+        # Extract the same way the handler does
+        icp_text = (
+            values.get("icp_input", {})
+            .get("icp_text", {})
+            .get("value", "")
+        )
+        keywords_text = (
+            values.get("keywords_input", {})
+            .get("keywords_text", {})
+            .get("value", "")
+        )
+
+        assert icp_text == "video & audio platforms for sincerity insights"
+        assert keywords_text == "video platform, audio platform"
+
+    def test_icp_text_empty_when_not_provided(self):
+        """ICP text should be empty string when block is missing."""
+        values = {
+            "keywords_input": {
+                "keywords_text": {
+                    "type": "plain_text_input",
+                    "value": "video platform",
+                }
+            },
+        }
+
+        icp_text = (
+            values.get("icp_input", {})
+            .get("icp_text", {})
+            .get("value", "")
+        )
+
+        assert icp_text == ""

@@ -39,6 +39,81 @@ def _strip_code_fences(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Keyword derivation from ICP text
+# ---------------------------------------------------------------------------
+
+
+async def derive_search_phrases(icp_text: str, cost_tracker: CostTracker) -> list[str]:
+    """Use DeepSeek to extract multi-word search phrases from ICP text.
+
+    Returns 3-5 short phrases suitable for DB headline/title matching.
+    Falls back to simple word-splitting on error.
+    """
+    if not icp_text:
+        return []
+
+    try:
+        client = _get_client()
+        completion = await client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You extract search phrases from ICP descriptions. Always respond with valid JSON.",
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Extract 3-5 short multi-word search phrases from this ICP description "
+                        f"that would match LinkedIn job titles or headlines.\n\n"
+                        f"ICP: {icp_text}\n\n"
+                        f"Return JSON: {{\"phrases\": [\"phrase 1\", \"phrase 2\", ...]}}\n\n"
+                        f"Rules:\n"
+                        f"- Each phrase should be 2-3 words\n"
+                        f"- Phrases should be specific enough to filter relevant people\n"
+                        f"- Include role/title variations and industry terms"
+                    ),
+                },
+            ],
+            max_tokens=200,
+            temperature=0.3,
+            response_format={"type": "json_object"},
+        )
+        cost_tracker.add_icp_check(1)
+
+        content = completion.choices[0].message.content
+        result = json.loads(_strip_code_fences(content))
+        phrases = result.get("phrases", [])
+
+        if isinstance(phrases, list) and phrases:
+            return [p.strip() for p in phrases if isinstance(p, str) and p.strip()]
+
+    except Exception as e:
+        logger.warning(f"DeepSeek derive_search_phrases error: {e}")
+
+    # Fallback: simple word splitting (existing behavior)
+    return _fallback_derive_phrases(icp_text)
+
+
+def _fallback_derive_phrases(icp_text: str) -> list[str]:
+    """Fallback phrase derivation using simple splitting on delimiters."""
+    import re
+
+    # Split on commas, slashes, and common conjunctions to preserve multi-word groups
+    parts = re.split(r'[,/]+', icp_text)
+    phrases = []
+    for part in parts:
+        cleaned = part.strip().strip("&").strip()
+        # Remove very short fragments
+        words = cleaned.split()
+        if len(words) >= 2:
+            phrases.append(cleaned.lower())
+        elif len(words) == 1 and len(cleaned) > 3:
+            phrases.append(cleaned.lower())
+    return phrases[:5] if phrases else []
+
+
+# ---------------------------------------------------------------------------
 # Step 2: Research prospect's business
 # ---------------------------------------------------------------------------
 

@@ -466,4 +466,5 @@ class TestSlackFallbackTrigger:
                 keywords=["video platform"],
                 pool_size=100,
                 auto_send=False,
+                icp_description=None,
             )

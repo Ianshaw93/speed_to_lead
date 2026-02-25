@@ -1150,11 +1150,15 @@ async def _process_classification(
                     if prospect.source_type == ProspectSource.BUYING_SIGNAL:
                         import asyncio
 
+                        from app.services.gift_pipeline.cost_tracker import CostTracker as _CostTracker
+                        from app.services.gift_pipeline.deepseek_calls import derive_search_phrases
+
                         icp = extract_icp_niche_from_dm(prospect.personalized_message)
                         if not icp and prospect.icp_reason:
                             icp = prospect.icp_reason
-                        keywords_str = derive_keywords_from_icp(icp)
-                        keywords = [k.strip() for k in keywords_str.split(",") if k.strip()]
+
+                        _ct = _CostTracker()
+                        keywords = await derive_search_phrases(icp, _ct) if icp else []
 
                         if keywords:
                             logger.info(
@@ -1167,6 +1171,7 @@ async def _process_classification(
                                     keywords=keywords,
                                     prospect_name=prospect.full_name or "Unknown",
                                     auto_send=True,
+                                    icp_description=icp,
                                 )
                             )
                         else:
@@ -1682,6 +1687,7 @@ async def _process_gift_leads_with_send(
     keywords: list[str],
     prospect_name: str,
     auto_send: bool = False,
+    icp_description: str | None = None,
 ) -> None:
     """Background task to search DB, create Google Sheet, and post results.
 
@@ -1696,6 +1702,7 @@ async def _process_gift_leads_with_send(
         keywords: Search keywords for job_title/headline matching.
         prospect_name: Display name for the prospect.
         auto_send: If True, send DM immediately without human approval.
+        icp_description: Original ICP text for post-search re-qualification.
     """
     logger.info(f"_process_gift_leads_with_send STARTED: prospect={prospect_name}, keywords={keywords}, auto_send={auto_send}")
     try:
@@ -1722,6 +1729,8 @@ async def _process_gift_leads_with_send(
             )
             pool_size = pool_result.scalar() or 0
 
+            # Over-fetch to compensate for ICP re-qualification filtering
+            fetch_limit = 30 if icp_description else 15
             result = await session.execute(
                 select(Prospect)
                 .where(
@@ -1729,7 +1738,7 @@ async def _process_gift_leads_with_send(
                     Prospect.activity_score.isnot(None),
                 )
                 .order_by(Prospect.activity_score.desc().nullslast())
-                .limit(15)
+                .limit(fetch_limit)
             )
             prospects = result.scalars().all()
 
@@ -1747,6 +1756,29 @@ async def _process_gift_leads_with_send(
                 for p in prospects
             ]
 
+        # Post-search ICP re-qualification
+        if leads and icp_description:
+            from app.services.gift_pipeline.deepseek_calls import check_icp_match
+            from app.services.gift_pipeline.cost_tracker import CostTracker
+
+            cost_tracker = CostTracker()
+            qualified_leads = []
+            for lead in leads:
+                try:
+                    icp_result = await check_icp_match(lead, cost_tracker, icp_description)
+                    if icp_result.get("match", True):
+                        qualified_leads.append(lead)
+                except Exception as e:
+                    logger.warning(f"ICP re-qualification error for {lead.get('full_name')}: {e}")
+                    qualified_leads.append(lead)  # Keep on error
+
+            before_count = len(leads)
+            leads = qualified_leads[:15]
+            logger.info(
+                f"ICP re-qualification: {before_count} → {len(leads)} leads "
+                f"(ICP: {icp_description[:60]})"
+            )
+
         if not leads:
             # DB pool empty for these keywords → fall back to full research pipeline
             await _run_gift_pipeline_fallback(
@@ -1755,6 +1787,7 @@ async def _process_gift_leads_with_send(
                 keywords=keywords,
                 pool_size=pool_size,
                 auto_send=auto_send,
+                icp_description=icp_description,
             )
             return
 
@@ -1828,6 +1861,7 @@ async def _run_gift_pipeline_fallback(
     keywords: list[str],
     pool_size: int,
     auto_send: bool = False,
+    icp_description: str | None = None,
 ) -> None:
     """Fall back to the full 12-step gift leads pipeline when DB pool is empty.
 
@@ -1869,6 +1903,7 @@ async def _run_gift_pipeline_fallback(
             prospect_url=prospect.linkedin_url,
             prospect_name=prospect_name,
             progress=post_progress,
+            user_icp=icp_description,
         )
 
         leads = pipeline_result.get("leads", [])
@@ -2936,7 +2971,15 @@ async def slack_interactions(
                 .get("keywords_text", {})
                 .get("value", "")
             )
-            logger.info(f"Confirm ICP gift leads submit: prospect_id={prospect_id}, keywords_text={keywords_text!r}")
+            icp_text = (
+                values.get("icp_input", {})
+                .get("icp_text", {})
+                .get("value", "")
+            )
+            logger.info(
+                f"Confirm ICP gift leads submit: prospect_id={prospect_id}, "
+                f"keywords_text={keywords_text!r}, icp_text={icp_text!r}"
+            )
 
             keywords = [k.strip() for k in keywords_text.split(",") if k.strip()]
 
@@ -2954,7 +2997,8 @@ async def slack_interactions(
                     pass
 
                 background_tasks.add_task(
-                    _process_gift_leads_with_send, prospect_id, keywords, prospect_name
+                    _process_gift_leads_with_send, prospect_id, keywords, prospect_name,
+                    icp_description=icp_text or None,
                 )
 
         # Handle send gift leads DM modal submission
