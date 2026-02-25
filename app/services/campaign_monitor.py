@@ -89,7 +89,7 @@ async def get_daily_connection_stats() -> list[int]:
         resp = await client.post(
             f"{HEYREACH_BASE_URL}/stats/GetOverallStats",
             json={
-                "campaignId": ACTIVE_CAMPAIGN_ID,
+                "campaignIds": [ACTIVE_CAMPAIGN_ID],
                 "accountIds": ACCOUNT_IDS,
                 "startDate": start.strftime("%Y-%m-%dT00:00:00Z"),
                 "endDate": now.strftime("%Y-%m-%dT23:59:59Z"),
@@ -133,6 +133,7 @@ def get_slack_bot():
 def _build_alert_message(
     fuel: dict,
     daily_stats: list[int],
+    deficit: int,
     unprocessed: int,
     batch_triggered: bool,
     batch_result: dict | None,
@@ -142,18 +143,18 @@ def _build_alert_message(
     """Build the Slack alert message."""
     name = fuel["campaign_name"]
     pending = fuel["pending"]
-    in_progress = fuel["in_progress"]
-    finished = fuel["finished"]
-    total = fuel["total"]
+    yesterday_sent = daily_stats[-1] if daily_stats else 0
 
     last_3 = daily_stats[-3:] if len(daily_stats) >= 3 else daily_stats
     stats_str = ", ".join(str(s) for s in last_3) if last_3 else "no data"
 
     lines = [
-        f"*Campaign Fuel Alert — {name}*",
+        f"*Campaign Fuel Check — {name}*",
         "",
-        f"Pending: {pending} | In Progress: {in_progress} | Finished: {finished}/{total}",
-        f"Last {len(last_3)} days connections: {stats_str}",
+        f"Yesterday: {yesterday_sent}/{DAILY_CONNECTION_LIMIT} connections sent"
+        + (f" (deficit: {deficit})" if deficit > 0 else " ✓"),
+        f"Pending in queue: {pending}",
+        f"Last {len(last_3)} days: {stats_str}",
     ]
 
     if batch_triggered and batch_result:
@@ -203,25 +204,29 @@ async def monitor_and_topup() -> dict:
         logger.warning(f"Failed to get daily stats: {e}")
         daily_stats = []
 
-    # 3. Determine if fuel is low
+    # 3. Check yesterday's connection count against daily limit
     pending = fuel["pending"]
-    recent_2day_avg = (
-        sum(daily_stats[-2:]) / len(daily_stats[-2:])
-        if len(daily_stats) >= 2
-        else float("inf")
+    yesterday_sent = daily_stats[-1] if daily_stats else 0
+    deficit = DAILY_CONNECTION_LIMIT - yesterday_sent
+
+    if deficit <= 0:
+        logger.info(
+            f"Campaign on track: {yesterday_sent} connections sent yesterday "
+            f"(target: {DAILY_CONNECTION_LIMIT}), {pending} pending"
+        )
+        return {
+            "action": "none",
+            "pending": pending,
+            "yesterday_sent": yesterday_sent,
+            "deficit": 0,
+        }
+
+    logger.info(
+        f"Connection deficit: {yesterday_sent}/{DAILY_CONNECTION_LIMIT} sent yesterday, "
+        f"deficit={deficit}, pending={pending}"
     )
 
-    fuel_low = pending < LOW_FUEL_THRESHOLD
-    activity_low = recent_2day_avg < LOW_ACTIVITY_THRESHOLD
-
-    if not fuel_low and not activity_low:
-        logger.info(
-            f"Campaign fuel OK: {pending} pending, "
-            f"2-day avg connections: {recent_2day_avg:.1f}"
-        )
-        return {"action": "none", "pending": pending, "avg_connections": recent_2day_avg}
-
-    # 4. Fuel or activity is low — check for unprocessed prospects
+    # 4. Deficit exists — try to fill from buying signal backlog first
     unprocessed = await _count_unprocessed_prospects()
     batch_triggered = False
     batch_result = None
@@ -240,15 +245,14 @@ async def monitor_and_topup() -> dict:
     lead_finder_triggered = False
     lead_finder_result = None
 
-    if not batch_triggered and unprocessed == 0 and pending < LOW_FUEL_THRESHOLD:
+    if not batch_triggered and unprocessed == 0:
         try:
             from app.services.lead_finder_pipeline import run_lead_finder_pipeline
 
-            # Calculate how many leads to fetch (deficit × 3 for funnel losses)
-            deficit = DAILY_CONNECTION_LIMIT - int(recent_2day_avg) if recent_2day_avg < DAILY_CONNECTION_LIMIT else 30
+            # Fetch 3x deficit to account for funnel losses (dedup, ICP filter)
             fetch_count = max(deficit * 3, 50)
 
-            logger.info(f"Auto-triggering lead finder pipeline (fetch_count={fetch_count})")
+            logger.info(f"Auto-triggering lead finder pipeline (deficit={deficit}, fetch_count={fetch_count})")
             asyncio.create_task(run_lead_finder_pipeline(fetch_count=fetch_count))
             lead_finder_triggered = True
         except Exception as e:
@@ -258,7 +262,7 @@ async def monitor_and_topup() -> dict:
     try:
         bot = get_slack_bot()
         message = _build_alert_message(
-            fuel, daily_stats, unprocessed, batch_triggered, batch_result,
+            fuel, daily_stats, deficit, unprocessed, batch_triggered, batch_result,
             lead_finder_triggered=lead_finder_triggered,
             lead_finder_result=lead_finder_result,
         )
@@ -270,7 +274,8 @@ async def monitor_and_topup() -> dict:
     return {
         "action": "alerted",
         "pending": pending,
-        "avg_connections": recent_2day_avg,
+        "yesterday_sent": yesterday_sent,
+        "deficit": deficit,
         "unprocessed_count": unprocessed,
         "batch_triggered": batch_triggered,
         "batch_result": batch_result,

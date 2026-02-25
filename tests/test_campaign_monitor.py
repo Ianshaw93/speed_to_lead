@@ -6,8 +6,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app.services.campaign_monitor import (
     ACTIVE_CAMPAIGN_ID,
     DAILY_CONNECTION_LIMIT,
-    LOW_ACTIVITY_THRESHOLD,
-    LOW_FUEL_THRESHOLD,
     check_campaign_fuel,
     get_daily_connection_stats,
     monitor_and_topup,
@@ -53,6 +51,27 @@ def _make_stats_response(daily_values: list[int]):
             for i, v in enumerate(daily_values)
         ]
     }
+
+
+_FUEL_OK = {
+    "pending": 120,
+    "in_progress": 100,
+    "finished": 600,
+    "total": 820,
+    "days_of_fuel": 4.0,
+    "campaign_name": "Smiths Competition",
+    "campaign_id": ACTIVE_CAMPAIGN_ID,
+}
+
+_FUEL_LOW = {
+    "pending": 0,
+    "in_progress": 158,
+    "finished": 656,
+    "total": 822,
+    "days_of_fuel": 0.0,
+    "campaign_name": "Smiths Competition",
+    "campaign_id": ACTIVE_CAMPAIGN_ID,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -164,60 +183,57 @@ class TestGetDailyConnectionStats:
 
 
 # ---------------------------------------------------------------------------
-# Tests: monitor_and_topup
+# Tests: monitor_and_topup (deficit-based logic)
 # ---------------------------------------------------------------------------
 
 class TestMonitorAndTopup:
 
     @pytest.mark.asyncio
-    async def test_silent_when_fuel_ok(self):
-        """No alert when fuel is healthy."""
+    async def test_no_action_when_yesterday_hit_target(self):
+        """No alert when yesterday's connections >= daily limit."""
         with patch("app.services.campaign_monitor.check_campaign_fuel") as mock_fuel, \
              patch("app.services.campaign_monitor.get_daily_connection_stats") as mock_stats, \
              patch("app.services.campaign_monitor.get_slack_bot") as mock_slack:
 
-            mock_fuel.return_value = {
-                "pending": 120,
-                "in_progress": 100,
-                "finished": 600,
-                "total": 820,
-                "days_of_fuel": 4.0,
-                "campaign_name": "Smiths Competition",
-                "campaign_id": ACTIVE_CAMPAIGN_ID,
-            }
-            mock_stats.return_value = [30, 28, 25, 22]
+            mock_fuel.return_value = _FUEL_OK
+            mock_stats.return_value = [28, 25, 30]  # yesterday=30, on target
 
             result = await monitor_and_topup()
 
         assert result["action"] == "none"
+        assert result["deficit"] == 0
+        assert result["yesterday_sent"] == 30
         mock_slack.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_alerts_and_triggers_batch_when_low_fuel(self):
-        """Sends alert and triggers batch when pending == 0 and there are unprocessed prospects."""
+    async def test_no_action_when_yesterday_exceeded_target(self):
+        """No alert when yesterday's connections > daily limit."""
+        with patch("app.services.campaign_monitor.check_campaign_fuel") as mock_fuel, \
+             patch("app.services.campaign_monitor.get_daily_connection_stats") as mock_stats, \
+             patch("app.services.campaign_monitor.get_slack_bot") as mock_slack:
+
+            mock_fuel.return_value = _FUEL_OK
+            mock_stats.return_value = [28, 25, 35]  # yesterday=35, above target
+
+            result = await monitor_and_topup()
+
+        assert result["action"] == "none"
+        assert result["deficit"] == 0
+        mock_slack.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_alerts_on_deficit_with_buying_signal_backlog(self):
+        """Triggers buying signal batch when yesterday had deficit and backlog exists."""
         with patch("app.services.campaign_monitor.check_campaign_fuel") as mock_fuel, \
              patch("app.services.campaign_monitor.get_daily_connection_stats") as mock_stats, \
              patch("app.services.campaign_monitor.get_slack_bot") as mock_slack, \
              patch("app.services.campaign_monitor._count_unprocessed_prospects") as mock_count, \
              patch("app.services.buying_signal_outreach.process_buying_signal_batch") as mock_batch:
 
-            mock_fuel.return_value = {
-                "pending": 0,
-                "in_progress": 158,
-                "finished": 656,
-                "total": 822,
-                "days_of_fuel": 0.0,
-                "campaign_name": "Smiths Competition",
-                "campaign_id": ACTIVE_CAMPAIGN_ID,
-            }
-            mock_stats.return_value = [18, 8, 10]
+            mock_fuel.return_value = _FUEL_LOW
+            mock_stats.return_value = [18, 8, 10]  # yesterday=10, deficit=20
             mock_count.return_value = 12
-            mock_batch.return_value = {
-                "processed": 12,
-                "messages_generated": 10,
-                "uploaded": 10,
-                "errors": 2,
-            }
+            mock_batch.return_value = {"processed": 12, "uploaded": 10}
 
             bot_instance = AsyncMock()
             mock_slack.return_value = bot_instance
@@ -225,89 +241,24 @@ class TestMonitorAndTopup:
             result = await monitor_and_topup()
 
         assert result["action"] == "alerted"
+        assert result["deficit"] == 20
+        assert result["yesterday_sent"] == 10
         assert result["batch_triggered"] is True
-        assert result["unprocessed_count"] == 12
         mock_batch.assert_awaited_once()
         bot_instance.send_confirmation.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_alerts_without_batch_when_no_backlog(self):
-        """Sends alert but skips batch when no unprocessed prospects."""
-        with patch("app.services.campaign_monitor.check_campaign_fuel") as mock_fuel, \
-             patch("app.services.campaign_monitor.get_daily_connection_stats") as mock_stats, \
-             patch("app.services.campaign_monitor.get_slack_bot") as mock_slack, \
-             patch("app.services.campaign_monitor._count_unprocessed_prospects") as mock_count:
-
-            mock_fuel.return_value = {
-                "pending": 0,
-                "in_progress": 158,
-                "finished": 656,
-                "total": 822,
-                "days_of_fuel": 0.0,
-                "campaign_name": "Smiths Competition",
-                "campaign_id": ACTIVE_CAMPAIGN_ID,
-            }
-            mock_stats.return_value = [18, 8, 10]
-            mock_count.return_value = 0
-
-            bot_instance = AsyncMock()
-            mock_slack.return_value = bot_instance
-
-            result = await monitor_and_topup()
-
-        assert result["action"] == "alerted"
-        assert result["batch_triggered"] is False
-        bot_instance.send_confirmation.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_alerts_on_low_activity(self):
-        """Sends alert when 2-day average connections < threshold."""
-        with patch("app.services.campaign_monitor.check_campaign_fuel") as mock_fuel, \
-             patch("app.services.campaign_monitor.get_daily_connection_stats") as mock_stats, \
-             patch("app.services.campaign_monitor.get_slack_bot") as mock_slack, \
-             patch("app.services.campaign_monitor._count_unprocessed_prospects") as mock_count:
-
-            mock_fuel.return_value = {
-                "pending": 40,  # below LOW_FUEL_THRESHOLD but > 0
-                "in_progress": 158,
-                "finished": 600,
-                "total": 798,
-                "days_of_fuel": 40 / DAILY_CONNECTION_LIMIT,
-                "campaign_name": "Smiths Competition",
-                "campaign_id": ACTIVE_CAMPAIGN_ID,
-            }
-            # Last 2 days average = (8+10)/2 = 9, below threshold
-            mock_stats.return_value = [30, 28, 25, 18, 8, 10]
-            mock_count.return_value = 0
-
-            bot_instance = AsyncMock()
-            mock_slack.return_value = bot_instance
-
-            result = await monitor_and_topup()
-
-        assert result["action"] == "alerted"
-        bot_instance.send_confirmation.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_triggers_lead_finder_when_no_buying_signals(self):
-        """Triggers lead finder pipeline when no buying signal backlog and fuel is low."""
+    async def test_triggers_lead_finder_when_no_backlog(self):
+        """Triggers lead finder pipeline when deficit exists and no buying signal backlog."""
         with patch("app.services.campaign_monitor.check_campaign_fuel") as mock_fuel, \
              patch("app.services.campaign_monitor.get_daily_connection_stats") as mock_stats, \
              patch("app.services.campaign_monitor.get_slack_bot") as mock_slack, \
              patch("app.services.campaign_monitor._count_unprocessed_prospects") as mock_count, \
              patch("asyncio.create_task") as mock_create_task:
 
-            mock_fuel.return_value = {
-                "pending": 0,
-                "in_progress": 158,
-                "finished": 656,
-                "total": 822,
-                "days_of_fuel": 0.0,
-                "campaign_name": "Smiths Competition",
-                "campaign_id": ACTIVE_CAMPAIGN_ID,
-            }
-            mock_stats.return_value = [18, 8, 10]
-            mock_count.return_value = 0  # no buying signal backlog
+            mock_fuel.return_value = _FUEL_LOW
+            mock_stats.return_value = [18, 8, 10]  # yesterday=10, deficit=20
+            mock_count.return_value = 0
 
             bot_instance = AsyncMock()
             mock_slack.return_value = bot_instance
@@ -315,31 +266,45 @@ class TestMonitorAndTopup:
             result = await monitor_and_topup()
 
         assert result["action"] == "alerted"
+        assert result["deficit"] == 20
         assert result["lead_finder_triggered"] is True
         assert result["batch_triggered"] is False
         mock_create_task.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_does_not_trigger_lead_finder_when_buying_signals_exist(self):
-        """Does not trigger lead finder when buying signal batch was processed."""
+    async def test_prefers_batch_over_lead_finder(self):
+        """When buying signal backlog exists, uses that instead of lead finder."""
         with patch("app.services.campaign_monitor.check_campaign_fuel") as mock_fuel, \
              patch("app.services.campaign_monitor.get_daily_connection_stats") as mock_stats, \
              patch("app.services.campaign_monitor.get_slack_bot") as mock_slack, \
              patch("app.services.campaign_monitor._count_unprocessed_prospects") as mock_count, \
              patch("app.services.buying_signal_outreach.process_buying_signal_batch") as mock_batch:
 
-            mock_fuel.return_value = {
-                "pending": 0,
-                "in_progress": 158,
-                "finished": 656,
-                "total": 822,
-                "days_of_fuel": 0.0,
-                "campaign_name": "Smiths Competition",
-                "campaign_id": ACTIVE_CAMPAIGN_ID,
-            }
-            mock_stats.return_value = [18, 8, 10]
-            mock_count.return_value = 5  # has buying signal backlog
-            mock_batch.return_value = {"processed": 5, "messages_generated": 5, "uploaded": 5, "errors": 0}
+            mock_fuel.return_value = _FUEL_LOW
+            mock_stats.return_value = [18, 8, 10]  # yesterday=10
+            mock_count.return_value = 5
+            mock_batch.return_value = {"processed": 5, "uploaded": 5}
+
+            bot_instance = AsyncMock()
+            mock_slack.return_value = bot_instance
+
+            result = await monitor_and_topup()
+
+        assert result["batch_triggered"] is True
+        assert result.get("lead_finder_triggered", False) is False
+
+    @pytest.mark.asyncio
+    async def test_alerts_when_stats_empty(self):
+        """Treats empty stats as 0 sent yesterday — triggers fill."""
+        with patch("app.services.campaign_monitor.check_campaign_fuel") as mock_fuel, \
+             patch("app.services.campaign_monitor.get_daily_connection_stats") as mock_stats, \
+             patch("app.services.campaign_monitor.get_slack_bot") as mock_slack, \
+             patch("app.services.campaign_monitor._count_unprocessed_prospects") as mock_count, \
+             patch("asyncio.create_task"):
+
+            mock_fuel.return_value = _FUEL_LOW
+            mock_stats.return_value = []  # no data
+            mock_count.return_value = 0
 
             bot_instance = AsyncMock()
             mock_slack.return_value = bot_instance
@@ -347,8 +312,8 @@ class TestMonitorAndTopup:
             result = await monitor_and_topup()
 
         assert result["action"] == "alerted"
-        assert result["batch_triggered"] is True
-        assert result.get("lead_finder_triggered", False) is False
+        assert result["deficit"] == DAILY_CONNECTION_LIMIT  # full deficit
+        assert result["yesterday_sent"] == 0
 
     @pytest.mark.asyncio
     async def test_no_action_when_campaign_not_found(self):
