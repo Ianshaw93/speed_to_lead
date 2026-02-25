@@ -42,6 +42,7 @@ try:
     from app.routers.changelog import router as changelog_router
     from app.routers.pipelines import router as pipelines_router
     from app.routers.costs import router as costs_router
+    from app.routers.clients import router as clients_router
     logger.info("Routers imported")
 except Exception as e:
     logger.error(f"Import failed: {e}", exc_info=True)
@@ -84,6 +85,7 @@ app.include_router(engagement_router)
 app.include_router(changelog_router)
 app.include_router(pipelines_router)
 app.include_router(costs_router)
+app.include_router(clients_router)
 
 
 @app.middleware("http")
@@ -369,6 +371,137 @@ async def admin_health_check_status() -> dict:
         "total": len(report.checks),
         "failing": [c.name for c in report.failing],
     }
+
+
+@app.post("/admin/campaign-fuel-check")
+async def admin_campaign_fuel_check(request: Request) -> dict:
+    """Run campaign fuel check manually.
+
+    Protected by SECRET_KEY in the Authorization header.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    expected = f"Bearer {settings.secret_key}"
+
+    if auth_header != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    from app.services.campaign_monitor import monitor_and_topup
+
+    result = await monitor_and_topup()
+    return result
+
+
+@app.post("/admin/run-competitor-pipeline")
+async def admin_run_competitor_pipeline(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    keywords: str = "ceos",
+    days_back: int = 7,
+    min_reactions: int = 50,
+    dry_run: bool = False,
+) -> dict:
+    """Trigger the competitor post pipeline manually.
+
+    Runs in the background so the response returns immediately.
+    Protected by SECRET_KEY in the Authorization header.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    expected = f"Bearer {settings.secret_key}"
+
+    if auth_header != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    from app.services.prospect_pipeline import run_competitor_post_pipeline
+
+    background_tasks.add_task(
+        run_competitor_post_pipeline,
+        keywords=keywords,
+        days_back=days_back,
+        min_reactions=min_reactions,
+        dry_run=dry_run,
+    )
+    return {"status": "started", "keywords": keywords, "days_back": days_back, "dry_run": dry_run}
+
+
+@app.post("/admin/run-lead-finder")
+async def admin_run_lead_finder(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    job_titles: str | None = None,
+    company_keywords: str | None = None,
+    location: str = "united states",
+    fetch_count: int = 100,
+    dry_run: bool = False,
+) -> dict:
+    """Trigger the lead finder pipeline manually.
+
+    job_titles and company_keywords are comma-separated strings.
+    Runs in the background so the response returns immediately.
+    Protected by SECRET_KEY in the Authorization header.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    expected = f"Bearer {settings.secret_key}"
+
+    if auth_header != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    from app.services.lead_finder_pipeline import run_lead_finder_pipeline
+
+    titles = [t.strip() for t in job_titles.split(",")] if job_titles else None
+    keywords = [k.strip() for k in company_keywords.split(",")] if company_keywords else None
+
+    background_tasks.add_task(
+        run_lead_finder_pipeline,
+        job_titles=titles,
+        company_keywords=keywords,
+        location=location,
+        fetch_count=fetch_count,
+        dry_run=dry_run,
+    )
+    return {"status": "started", "job_titles": titles, "company_keywords": keywords, "fetch_count": fetch_count, "dry_run": dry_run}
+
+
+@app.get("/admin/pipeline-runs")
+async def admin_list_pipeline_runs(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    limit: int = 10,
+) -> list[dict]:
+    """List recent pipeline runs with status and metrics.
+
+    Protected by SECRET_KEY in the Authorization header.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    expected = f"Bearer {settings.secret_key}"
+
+    if auth_header != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    result = await db.execute(
+        select(PipelineRun)
+        .order_by(PipelineRun.created_at.desc())
+        .limit(limit)
+    )
+    runs = result.scalars().all()
+
+    return [
+        {
+            "id": str(r.id),
+            "run_type": r.run_type,
+            "status": r.status,
+            "posts_found": r.posts_found,
+            "engagers_found": r.engagers_found,
+            "profiles_scraped": r.profiles_scraped,
+            "icp_qualified": r.icp_qualified,
+            "final_leads": r.final_leads,
+            "cost_total": str(r.cost_total),
+            "started_at": r.started_at.isoformat() if r.started_at else None,
+            "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+            "duration_seconds": r.duration_seconds,
+            "error_message": r.error_message,
+        }
+        for r in runs
+    ]
 
 
 @app.post("/admin/expire-stale-drafts")

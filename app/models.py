@@ -83,6 +83,15 @@ class EngagementPostStatus(str, enum.Enum):
     SKIPPED = "skipped"
 
 
+class ClientStatus(str, enum.Enum):
+    """Status of a client relationship."""
+
+    ACTIVE = "active"
+    PAUSED = "paused"
+    CHURNED = "churned"
+    EX_CLIENT = "ex_client"
+
+
 class Conversation(Base):
     """A LinkedIn conversation with a lead."""
 
@@ -748,4 +757,43 @@ class CostLog(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class Client(Base):
+    """A client (current or former) with case study data for re-engagement outreach."""
+
+    __tablename__ = "clients"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    name: Mapped[str] = mapped_column(String(255))
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    linkedin_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    company: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[ClientStatus] = mapped_column(
+        Enum(
+            ClientStatus,
+            name="client_status",
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        default=ClientStatus.ACTIVE,
+    )
+    case_study_data: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prospect_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("prospects.id"), nullable=True, index=True
+    )
+    started_at: Mapped[date | None] = mapped_column(Date, nullable=True)
+    ended_at: Mapped[date | None] = mapped_column(Date, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
     )
