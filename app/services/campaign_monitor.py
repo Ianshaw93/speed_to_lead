@@ -37,12 +37,16 @@ async def check_campaign_fuel() -> dict | None:
     campaign_name, campaign_id — or None if campaign not found.
     """
     async with httpx.AsyncClient(
-        headers={"X-API-KEY": settings.heyreach_api_key, "Accept": "text/plain"},
+        headers={
+            "X-API-KEY": settings.heyreach_api_key,
+            "Content-Type": "application/json",
+            "Accept": "text/plain",
+        },
         timeout=30.0,
     ) as client:
-        resp = await client.get(
+        resp = await client.post(
             f"{HEYREACH_BASE_URL}/campaign/GetAll",
-            params={"offset": 0, "limit": 50},
+            json={"offset": 0, "limit": 50},
         )
         resp.raise_for_status()
         data = resp.json()

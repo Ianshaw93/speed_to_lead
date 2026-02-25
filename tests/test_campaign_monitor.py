@@ -69,7 +69,7 @@ class TestCheckCampaignFuel:
 
         with patch("app.services.campaign_monitor.httpx.AsyncClient") as MockClient:
             client_instance = AsyncMock()
-            client_instance.get.return_value = mock_resp
+            client_instance.post.return_value = mock_resp
             client_instance.__aenter__ = AsyncMock(return_value=client_instance)
             client_instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = client_instance
@@ -91,7 +91,7 @@ class TestCheckCampaignFuel:
 
         with patch("app.services.campaign_monitor.httpx.AsyncClient") as MockClient:
             client_instance = AsyncMock()
-            client_instance.get.return_value = mock_resp
+            client_instance.post.return_value = mock_resp
             client_instance.__aenter__ = AsyncMock(return_value=client_instance)
             client_instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = client_instance
@@ -111,7 +111,7 @@ class TestCheckCampaignFuel:
 
         with patch("app.services.campaign_monitor.httpx.AsyncClient") as MockClient:
             client_instance = AsyncMock()
-            client_instance.get.return_value = mock_resp
+            client_instance.post.return_value = mock_resp
             client_instance.__aenter__ = AsyncMock(return_value=client_instance)
             client_instance.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = client_instance
