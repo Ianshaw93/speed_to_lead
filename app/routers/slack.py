@@ -34,6 +34,8 @@ from app.services.heyreach import get_heyreach_client, HeyReachError
 
 # HeyReach list ID for follow-up sequences
 HEYREACH_FOLLOW_UP_LIST_ID = 511495
+# HeyReach campaign ID for follow-up sequences
+HEYREACH_FOLLOW_UP_CAMPAIGN_ID = 300178
 from app.models import ProspectSource
 from app.services.slack import (
     SlackBot,

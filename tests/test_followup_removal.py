@@ -164,8 +164,8 @@ class TestCheckAndRemoveOnWebhook:
     """Tests for checking and removing prospects on webhook receipt."""
 
     @pytest.mark.asyncio
-    async def test_check_and_remove_prospect_on_reply(self, test_db_session):
-        """Should identify prospect for removal when they reply within 24h."""
+    async def test_check_and_remove_prospect_on_reply_within_24h(self, test_db_session):
+        """Should stop campaign AND remove from list when they reply within 24h."""
         from app.main import normalize_linkedin_url, check_and_remove_from_followup
 
         now = datetime.now(timezone.utc)
@@ -182,16 +182,21 @@ class TestCheckAndRemoveOnWebhook:
         test_db_session.add(prospect)
         await test_db_session.commit()
 
-        # Mock the HeyReach client (patch where it's imported/used in the function)
         with patch("app.services.heyreach.get_heyreach_client") as mock_get_client:
             mock_client = AsyncMock()
+            mock_client.stop_lead_in_campaign.return_value = {"success": True}
             mock_client.remove_lead_from_list.return_value = {"success": True}
             mock_get_client.return_value = mock_client
 
-            # Call the check function
             removed = await check_and_remove_from_followup(test_db_session, linkedin_url)
 
             assert removed is True
+            # Should stop the campaign
+            mock_client.stop_lead_in_campaign.assert_called_once_with(
+                campaign_id=300178,
+                linkedin_url=normalize_linkedin_url(linkedin_url),
+            )
+            # Should also remove from list (within 24h)
             mock_client.remove_lead_from_list.assert_called_once_with(
                 list_id=511495,
                 linkedin_url=normalize_linkedin_url(linkedin_url),
@@ -203,8 +208,37 @@ class TestCheckAndRemoveOnWebhook:
         assert prospect.added_to_followup_at is None
 
     @pytest.mark.asyncio
-    async def test_no_removal_for_prospect_not_in_followup(self, test_db_session):
-        """Should not attempt removal if prospect is not in follow-up list."""
+    async def test_no_action_after_24h(self, test_db_session):
+        """Should take no action after 24h — HeyReach handles replies to follow-ups natively."""
+        from app.main import normalize_linkedin_url, check_and_remove_from_followup
+
+        now = datetime.now(timezone.utc)
+        linkedin_url = "https://www.linkedin.com/in/latereply"
+
+        # Create prospect added to follow-up 30 hours ago (past 24h window)
+        prospect = Prospect(
+            linkedin_url=normalize_linkedin_url(linkedin_url),
+            full_name="Late Reply",
+            source_type=ProspectSource.COMPETITOR_POST,
+            followup_list_id=511495,
+            added_to_followup_at=now - timedelta(hours=30),
+        )
+        test_db_session.add(prospect)
+        await test_db_session.commit()
+
+        with patch("app.services.heyreach.get_heyreach_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_get_client.return_value = mock_client
+
+            removed = await check_and_remove_from_followup(test_db_session, linkedin_url)
+
+            assert removed is False
+            mock_client.stop_lead_in_campaign.assert_not_called()
+            mock_client.remove_lead_from_list.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_action_for_prospect_not_in_followup(self, test_db_session):
+        """Should not attempt any action if prospect is not in follow-up list."""
         from app.main import normalize_linkedin_url, check_and_remove_from_followup
 
         linkedin_url = "https://www.linkedin.com/in/normaluser"
@@ -225,11 +259,12 @@ class TestCheckAndRemoveOnWebhook:
             removed = await check_and_remove_from_followup(test_db_session, linkedin_url)
 
             assert removed is False
+            mock_client.stop_lead_in_campaign.assert_not_called()
             mock_client.remove_lead_from_list.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_no_removal_for_unknown_prospect(self, test_db_session):
-        """Should not attempt removal if prospect doesn't exist in database."""
+    async def test_no_action_for_unknown_prospect(self, test_db_session):
+        """Should not attempt any action if prospect doesn't exist in database."""
         from app.main import check_and_remove_from_followup
 
         with patch("app.services.heyreach.get_heyreach_client") as mock_get_client:
@@ -242,6 +277,7 @@ class TestCheckAndRemoveOnWebhook:
             )
 
             assert removed is False
+            mock_client.stop_lead_in_campaign.assert_not_called()
             mock_client.remove_lead_from_list.assert_not_called()
 
 
