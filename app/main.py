@@ -2589,7 +2589,9 @@ async def admin_trigger_gift_leads(
         qualified_leads = []
         for lead in leads:
             try:
-                icp_result = await check_icp_match(lead, cost_tracker, icp_criteria)
+                icp_result = await check_icp_match(
+                    lead, cost_tracker, icp_criteria, strict=True,
+                )
                 if icp_result.get("match", True):
                     qualified_leads.append(lead)
             except Exception as e:
@@ -2778,7 +2780,7 @@ async def _admin_gift_leads_fallback(
                     }
                     try:
                         icp_result = await check_icp_match(
-                            normalized, cost_tracker, icp_text
+                            normalized, cost_tracker, icp_text, strict=True,
                         )
                         if icp_result.get("match", True):
                             qualified.append(normalized)

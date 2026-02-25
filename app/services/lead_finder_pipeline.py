@@ -40,7 +40,7 @@ from app.services.prospect_pipeline import (
 logger = logging.getLogger(__name__)
 
 # Apify actor for lead search
-LEADS_FINDER_ACTOR = "code_crafter/leads-finder"
+LEADS_FINDER_ACTOR = "code_crafter~leads-finder"
 
 # Default search parameters (matching multichannel-outreach/execution/scrape_apify.py)
 DEFAULT_JOB_TITLES = ["CEO", "Founder", "Managing Director"]

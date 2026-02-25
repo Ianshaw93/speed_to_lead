@@ -291,8 +291,17 @@ def _fallback_queries(research: dict, days_back: int) -> list[str]:
 
 async def check_icp_match(
     lead: dict, cost_tracker: CostTracker, icp_criteria: str | None = None,
+    strict: bool = False,
 ) -> dict:
-    """Check if a lead matches ICP using DeepSeek."""
+    """Check if a lead matches ICP using DeepSeek.
+
+    Args:
+        lead: Lead dict with profile info.
+        cost_tracker: Cost tracker instance.
+        icp_criteria: ICP description to match against.
+        strict: If True, uses strict matching for a prospect's ICP (gift leads).
+                If False, uses loose matching for Scaling Smiths' own ICP (default).
+    """
     headline = lead.get('headline', 'N/A')
     company_desc = (lead.get('company_description') or lead.get('about') or '')[:300]
 
@@ -304,8 +313,33 @@ Company Description: {company_desc or 'N/A'}
 Location: {lead.get('addressWithCountry', lead.get('location', 'Unknown'))}
 Industry: {lead.get('companyIndustry', lead.get('industry', 'N/A'))}"""
 
-    system_prompt = "You are an expert at evaluating sales leads against ICP criteria. Always respond with valid JSON."
-    user_prompt = f"""You are verifying if a LinkedIn lead matches the Ideal Customer Profile (ICP).
+    if strict and icp_criteria:
+        system_prompt = "You are a strict lead qualification expert. You reject leads that don't clearly fit the target niche. Always respond with valid JSON."
+        user_prompt = f"""We're looking for B2B decision-makers (founders, CEOs, MDs, etc.) whose business operates in a SPECIFIC industry/niche.
+
+Target niche: "{icp_criteria}"
+
+Lead Information:
+{lead_summary}
+
+The key question: Is this person a decision-maker whose BUSINESS/PRODUCT is in the "{icp_criteria}" space?
+
+Rules:
+- Assume they ARE a decision-maker (founder/CEO/etc.) — that's already filtered.
+- The deciding factor is their INDUSTRY/NICHE. What does their company actually sell or do?
+- A "tech founder" means their company builds/sells technology products (SaaS, software, hardware, dev tools, AI, etc.)
+- Marketing agencies, coaches, consultants, content creators, LinkedIn experts, recruiters etc. are NOT "{icp_criteria}" unless their product is literally in that space.
+- Be strict. When in doubt, reject. 5 perfect matches > 15 loose ones.
+
+Respond in JSON:
+{{
+  "match": true/false,
+  "confidence": "high" | "medium" | "low",
+  "reason": "Brief explanation (1 sentence)"
+}}"""
+    else:
+        system_prompt = "You are an expert at evaluating sales leads against ICP criteria. Always respond with valid JSON."
+        user_prompt = f"""You are verifying if a LinkedIn lead matches the Ideal Customer Profile (ICP).
 
 ICP Criteria: {icp_criteria or 'B2B decision-makers in high-ticket service industries'}
 

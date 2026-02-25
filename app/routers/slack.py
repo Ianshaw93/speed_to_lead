@@ -1767,7 +1767,9 @@ async def _process_gift_leads_with_send(
             qualified_leads = []
             for lead in leads:
                 try:
-                    icp_result = await check_icp_match(lead, cost_tracker, icp_description)
+                    icp_result = await check_icp_match(
+                        lead, cost_tracker, icp_description, strict=True,
+                    )
                     if icp_result.get("match", True):
                         qualified_leads.append(lead)
                 except Exception as e:

@@ -681,7 +681,7 @@ class TestIcpRequalification:
         mock_get_bot.return_value = mock_bot
 
         # Mock check_icp_match: only Lead 0 and Lead 2 match
-        async def mock_icp_check(lead, cost_tracker, icp_criteria=None):
+        async def mock_icp_check(lead, cost_tracker, icp_criteria=None, strict=False):
             name = lead.get("full_name", "")
             if name in ("Lead 0", "Lead 2"):
                 return {"match": True, "confidence": "high", "reason": "Matches ICP"}

@@ -98,7 +98,7 @@ class TestTier1IcpRequalification:
         mock_bot = AsyncMock()
         mock_slack.return_value = mock_bot
 
-        async def icp_check(lead, cost_tracker, icp_criteria=None):
+        async def icp_check(lead, cost_tracker, icp_criteria=None, strict=False):
             if "Good Lead" in lead.get("full_name", ""):
                 return {"match": True, "confidence": "high", "reason": "Matches"}
             return {"match": False, "confidence": "high", "reason": "Not ICP"}
