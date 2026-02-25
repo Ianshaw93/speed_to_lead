@@ -58,7 +58,7 @@ async def get_similar_examples(
         select(Draft, Conversation)
         .join(Conversation, Draft.conversation_id == Conversation.id)
         .where(
-            Draft.status.in_([DraftStatus.APPROVED.value, "sent"]),
+            Draft.status == DraftStatus.APPROVED,
             Conversation.funnel_stage == stage,
         )
         .order_by(Draft.created_at.desc())
