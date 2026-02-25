@@ -2482,6 +2482,7 @@ async def admin_trigger_gift_leads(
     prospect_name: str,
     keywords: str,
     background_tasks: BackgroundTasks,
+    icp_label: str | None = None,
 ) -> dict:
     """Trigger the gift leads flow for a prospect that has no pipeline run yet.
 
@@ -2490,6 +2491,8 @@ async def admin_trigger_gift_leads(
     Query params:
         prospect_name: Prospect name (fuzzy matched against conversations).
         keywords: Comma-separated keywords to search by.
+        icp_label: Short ICP description for the draft DM (e.g. "B2B tech founders").
+                   Used as "<icp_label> showing high intent signals" in the message.
     """
     from sqlalchemy import or_
 
@@ -2580,18 +2583,20 @@ async def admin_trigger_gift_leads(
             logger.error(f"Failed to create Google Sheet: {e}", exc_info=True)
 
     # Compose draft DM
-    first_name = conv.lead_name.split()[0] if conv.lead_name else "there"
+    icp_text = icp_label or ", ".join(keyword_list)
     if sheet_url:
         draft_dm = (
-            f"Hey {first_name}, I pulled together some people in your space "
-            f"that might be worth connecting with:\n\n"
+            f"{icp_text} showing high intent signals\n\n"
             f"{sheet_url}\n\n"
-            f"Let me know if any of these are useful!"
+            f"Will be valuable for you\n\n"
+            f"Oh yeah I included the LinkedIn profile links in the spreadsheet. "
+            f"Rather than emails etc. Is LI your main way to reach out to "
+            f"potential clients? Or more through warm network/word of mouth"
         )
     else:
         draft_dm = (
-            f"Hey {first_name}, I pulled together {len(leads)} people in your space "
-            f"that might be worth connecting with. Let me know if you'd like the list!"
+            f"{icp_text} showing high intent signals\n\n"
+            f"Will be valuable for you - let me know if you'd like the list!"
         )
 
     # Post to Slack with Send/Edit buttons
