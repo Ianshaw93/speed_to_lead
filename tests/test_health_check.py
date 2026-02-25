@@ -411,6 +411,8 @@ class TestRunHealthCheck:
     @pytest.mark.asyncio
     async def test_all_ok(self, test_db_session: AsyncSession):
         """When all data is fresh, overall status should be OK."""
+        from unittest.mock import AsyncMock, patch
+
         # Seed enough data to make all checks pass
         conv = _make_conversation(test_db_session)
         await test_db_session.flush()
@@ -426,7 +428,18 @@ class TestRunHealthCheck:
 
         await test_db_session.commit()
 
-        report = await run_health_check(test_db_session)
+        # Mock the HeyReach API call for campaign fuel check
+        mock_fuel = {
+            "campaign_id": 300178,
+            "campaign_name": "Test Campaign",
+            "pending": 100,
+            "in_progress": 50,
+            "finished": 200,
+            "total": 350,
+            "days_of_fuel": 3.3,
+        }
+        with patch("app.services.campaign_monitor.check_campaign_fuel", new_callable=AsyncMock, return_value=mock_fuel):
+            report = await run_health_check(test_db_session)
         assert report.status == CheckStatus.OK
         assert report.passing == len(ALL_CHECKS)
         assert len(report.failing) == 0

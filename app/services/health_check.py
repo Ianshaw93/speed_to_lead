@@ -365,6 +365,46 @@ async def check_connection_tracking(session: AsyncSession) -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
+# Check 10: Campaign fuel
+# ---------------------------------------------------------------------------
+
+async def check_campaign_fuel_health(session: AsyncSession) -> CheckResult:
+    """Check HeyReach campaign fuel level."""
+    try:
+        from app.services.campaign_monitor import check_campaign_fuel, LOW_FUEL_THRESHOLD
+
+        fuel = await check_campaign_fuel()
+
+        if fuel is None:
+            return CheckResult("campaign_fuel", CheckStatus.WARNING, "Could not fetch campaign fuel status")
+
+        pending = fuel["pending"]
+        name = fuel["campaign_name"]
+
+        if pending > LOW_FUEL_THRESHOLD:
+            return CheckResult(
+                "campaign_fuel", CheckStatus.OK,
+                f"{name}: {pending} pending leads",
+            )
+
+        if pending > 0:
+            return CheckResult(
+                "campaign_fuel", CheckStatus.WARNING,
+                f"{name}: only {pending} pending leads (threshold: {LOW_FUEL_THRESHOLD})",
+                details=fuel,
+            )
+
+        return CheckResult(
+            "campaign_fuel", CheckStatus.CRITICAL,
+            f"{name}: 0 pending leads — campaign will stall",
+            details=fuel,
+        )
+
+    except Exception as e:
+        return CheckResult("campaign_fuel", CheckStatus.WARNING, f"Fuel check error: {e}")
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -378,6 +418,7 @@ ALL_CHECKS = [
     check_daily_metrics,
     check_pipeline_runs,
     check_connection_tracking,
+    check_campaign_fuel_health,
 ]
 
 

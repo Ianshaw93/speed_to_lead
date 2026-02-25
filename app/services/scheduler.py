@@ -182,6 +182,26 @@ async def run_trend_scout_scheduled_task() -> None:
             pass
 
 
+async def campaign_fuel_check_task() -> None:
+    """Check campaign fuel and auto-top-up if needed. Called by scheduler at 8am UK time."""
+    import logging
+    from app.services.campaign_monitor import monitor_and_topup
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        result = await monitor_and_topup()
+        logger.info(f"Campaign fuel check completed: {result.get('action')}")
+    except Exception as e:
+        logger.error(f"Failed to run campaign fuel check: {e}", exc_info=True)
+        try:
+            from app.services.slack import get_slack_bot
+            bot = get_slack_bot()
+            await bot.send_confirmation(f"*Campaign Fuel Check FAILED*\nError: {e}")
+        except Exception:
+            pass
+
+
 async def expire_stale_drafts_task(session=None) -> None:
     """Expire stale PENDING drafts. Called daily at 1am UK time.
 
@@ -543,6 +563,20 @@ class SchedulerService:
             ),
             id='trend_scout_weekly',
             name='Weekly trend scout scan',
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
+
+        # Campaign fuel check at 8am UK time (before 9am daily report)
+        self._scheduler.add_job(
+            campaign_fuel_check_task,
+            trigger=CronTrigger(
+                hour=8,
+                minute=0,
+                timezone='Europe/London',
+            ),
+            id='campaign_fuel_check',
+            name='Campaign fuel monitor',
             replace_existing=True,
             misfire_grace_time=3600,
         )
