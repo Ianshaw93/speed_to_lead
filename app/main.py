@@ -1133,22 +1133,26 @@ def normalize_linkedin_url(url: str) -> str:
 
 
 async def check_and_remove_from_followup(session, linkedin_url: str) -> bool:
-    """Check if prospect should be removed from follow-up list and remove if so.
+    """Check if prospect should be stopped in follow-up campaign and removed from list.
 
-    A prospect should be removed if:
-    1. They exist in the database
-    2. They were added to a follow-up list
-    3. They were added within the last 24 hours
+    If a prospect replies within 24h of being added to the follow-up list,
+    they replied before the first follow-up fired. We need to:
+    1. Stop them in the campaign (prevents the first follow-up from sending)
+    2. Remove them from the follow-up list
+
+    HeyReach natively handles replies that come after a follow-up has been sent,
+    so we only need to act within the 24h window.
 
     Args:
         session: Database session.
         linkedin_url: The prospect's LinkedIn profile URL.
 
     Returns:
-        True if prospect was removed from follow-up list, False otherwise.
+        True if prospect was stopped/removed, False otherwise.
     """
     from datetime import datetime, timedelta, timezone
     from app.services.heyreach import get_heyreach_client, HeyReachError
+    from app.routers.slack import HEYREACH_FOLLOW_UP_CAMPAIGN_ID
 
     normalized_url = normalize_linkedin_url(linkedin_url)
     if not normalized_url:
@@ -1157,7 +1161,7 @@ async def check_and_remove_from_followup(session, linkedin_url: str) -> bool:
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(hours=24)
 
-    # Find prospect who was added to follow-up list within last 24 hours
+    # Find prospect added to follow-up list within last 24 hours
     result = await session.execute(
         select(Prospect).where(
             Prospect.linkedin_url == normalized_url,
@@ -1170,33 +1174,44 @@ async def check_and_remove_from_followup(session, linkedin_url: str) -> bool:
     if not prospect:
         return False
 
-    # Prospect replied within 24h of being added to follow-up list
-    # Remove them from the HeyReach list
+    # Prospect replied before the first follow-up fired
     logger.info(
         f"Prospect {prospect.full_name} ({normalized_url}) replied within 24h of "
-        f"being added to follow-up list {prospect.followup_list_id}. Removing..."
+        f"being added to follow-up list {prospect.followup_list_id}. "
+        f"Stopping campaign {HEYREACH_FOLLOW_UP_CAMPAIGN_ID} and removing from list..."
     )
 
     try:
         heyreach = get_heyreach_client()
+
+        # Stop the lead in the follow-up campaign
+        await heyreach.stop_lead_in_campaign(
+            campaign_id=HEYREACH_FOLLOW_UP_CAMPAIGN_ID,
+            linkedin_url=normalized_url,
+        )
+        logger.info(
+            f"Stopped {normalized_url} in campaign {HEYREACH_FOLLOW_UP_CAMPAIGN_ID}"
+        )
+
+        # Remove from the follow-up list
         await heyreach.remove_lead_from_list(
             list_id=prospect.followup_list_id,
             linkedin_url=normalized_url,
         )
+        logger.info(f"Removed {normalized_url} from follow-up list {prospect.followup_list_id}")
 
         # Clear the follow-up tracking fields
         prospect.followup_list_id = None
         prospect.added_to_followup_at = None
         await session.commit()
 
-        logger.info(f"Successfully removed {normalized_url} from follow-up list")
         return True
 
     except HeyReachError as e:
-        logger.error(f"Failed to remove prospect from follow-up list: {e}")
+        logger.error(f"Failed to stop/remove prospect from follow-up: {e}")
         return False
     except Exception as e:
-        logger.error(f"Unexpected error removing prospect from follow-up list: {e}", exc_info=True)
+        logger.error(f"Unexpected error in follow-up removal: {e}", exc_info=True)
         return False
 
 
