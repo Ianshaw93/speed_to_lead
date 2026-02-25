@@ -45,12 +45,11 @@ CAMPAIGN_WARNING_FUEL = _make_campaign(
 
 def _make_stats_response(daily_values: list[int]):
     """Build a mock GetOverallStats response with connectionsSent per day."""
-    return {
-        "connectionsSent": [
-            {"date": f"2026-02-{17 + i:02d}", "count": v}
-            for i, v in enumerate(daily_values)
-        ]
-    }
+    by_day = {}
+    for i, v in enumerate(daily_values):
+        date_key = f"2026-02-{17 + i:02d}T00:00:00Z"
+        by_day[date_key] = {"connectionsSent": v, "connectionsAccepted": 0, "messagesSent": 0}
+    return {"byDayStats": by_day, "overallStats": {}}
 
 
 _FUEL_OK = {

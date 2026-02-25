@@ -98,11 +98,18 @@ async def get_daily_connection_stats() -> list[int]:
         resp.raise_for_status()
         data = resp.json()
 
-    logger.info(f"GetOverallStats raw response keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
-    logger.info(f"GetOverallStats raw response (truncated): {str(data)[:1000]}")
+    # Response shape: {"byDayStats": {"2026-02-18T00:00:00Z": {"connectionsSent": 30, ...}, ...}}
+    by_day = data.get("byDayStats", {})
+    if not by_day:
+        logger.warning(f"GetOverallStats: no byDayStats in response. Keys: {list(data.keys())}")
+        return []
 
-    entries = data.get("connectionsSent", [])
-    return [entry.get("count", 0) for entry in entries]
+    # Sort by date key and extract connectionsSent per day
+    sorted_days = sorted(by_day.items())
+    daily_counts = [day_stats.get("connectionsSent", 0) for _, day_stats in sorted_days]
+
+    logger.info(f"Daily connection stats (last {len(daily_counts)} days): {daily_counts}")
+    return daily_counts
 
 
 # ---------------------------------------------------------------------------
