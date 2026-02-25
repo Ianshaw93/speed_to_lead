@@ -2597,25 +2597,16 @@ async def admin_trigger_gift_leads(
     # Post to Slack with Send/Edit buttons
     slack_bot = get_slack_bot()
     prospect_id = prospect.id if prospect else None
-    if prospect_id:
-        await slack_bot.send_gift_leads_ready(
-            prospect_id=prospect_id,
-            prospect_name=conv.lead_name,
-            lead_count=len(leads),
-            icp=", ".join(keyword_list),
-            context="DB pool keyword search",
-            draft_dm=draft_dm,
-            sheet_url=sheet_url,
-        )
-    else:
-        await slack_bot.send_confirmation(
-            f"*Gift Leads for {conv.lead_name}* ({len(leads)} leads)\n"
-            + (f"<{sheet_url}|Google Sheet>\n" if sheet_url else "")
-            + "\n".join(
-                f"{i+1}. *{l['full_name']}* - {l['job_title']} @ {l['company_name']}"
-                for i, l in enumerate(leads)
-            )
-        )
+    await slack_bot.send_gift_leads_ready(
+        prospect_id=prospect_id,
+        prospect_name=conv.lead_name,
+        lead_count=len(leads),
+        icp=", ".join(keyword_list),
+        context="DB pool keyword search",
+        draft_dm=draft_dm,
+        sheet_url=sheet_url,
+        conversation_id=conv.id if not prospect_id else None,
+    )
 
     return {
         "prospect": conv.lead_name,
