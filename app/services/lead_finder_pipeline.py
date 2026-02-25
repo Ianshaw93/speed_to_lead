@@ -169,21 +169,28 @@ async def find_leads_apify(
     # Normalize field names to match our conventions
     normalized: list[dict] = []
     for item in items:
-        linkedin_url = item.get("linkedin_url") or item.get("linkedinUrl") or ""
+        linkedin_url = (
+            item.get("linkedin") or item.get("linkedin_url")
+            or item.get("linkedinUrl") or ""
+        )
         if not linkedin_url:
             continue
+        city = item.get("city") or ""
+        state = item.get("state") or ""
+        country = item.get("country") or ""
+        location_str = ", ".join(filter(None, [city, state, country])) or location
         normalized.append({
             "linkedinUrl": _normalize_url(linkedin_url),
             "firstName": item.get("first_name") or item.get("firstName") or "",
             "lastName": item.get("last_name") or item.get("lastName") or "",
-            "fullName": f"{item.get('first_name', '')} {item.get('last_name', '')}".strip(),
+            "fullName": item.get("full_name") or f"{item.get('first_name', '')} {item.get('last_name', '')}".strip(),
             "jobTitle": item.get("job_title") or item.get("jobTitle") or "",
             "companyName": item.get("company_name") or item.get("companyName") or "",
-            "companyIndustry": item.get("company_industry") or "",
+            "companyIndustry": item.get("industry") or item.get("company_industry") or "",
             "headline": item.get("headline") or item.get("job_title") or "",
             "email": item.get("email") or "",
-            "addressWithCountry": item.get("location") or location,
-            "company_domain": item.get("company_domain") or "",
+            "addressWithCountry": location_str,
+            "company_domain": item.get("company_domain") or item.get("company_website") or "",
         })
 
     logger.info(f"Leads-finder returned {len(normalized)} leads with LinkedIn URLs")
