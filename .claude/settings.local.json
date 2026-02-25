@@ -87,7 +87,18 @@
       "Bash(where:*)",
       "Bash(wc:*)",
       "WebFetch(domain:docs.google.com)",
-      "Bash(PYTHONIOENCODING=utf-8 python:*)"
+      "Bash(PYTHONIOENCODING=utf-8 python:*)",
+      "Bash(cd:*)",
+      "Bash(cd /c/Users/IanShaw/localProgramming/smiths/LI_cross_repo/speed_to_lead && railway.exe variable set --help 2>&1 || cmd.exe /c \"railway variable set --help\" 2>&1)",
+      "Bash(cd /c/Users/IanShaw/localProgramming/smiths/LI_cross_repo/speed_to_lead && DATABASE_URL=\"postgresql://postgres:FxvzWGNDpTtzlFccSOQKATscwIXJirFA@crossover.proxy.rlwy.net:56267/railway\" alembic upgrade head 2>&1)",
+      "Bash(python3:*)",
+      "WebFetch(domain:discuss.google.dev)",
+      "WebFetch(domain:api.slack.com)",
+      "WebFetch(domain:docs.slack.dev)",
+      "WebFetch(domain:apps.make.com)",
+      "WebFetch(domain:n8n.io)",
+      "WebFetch(domain:github.com)",
+      "Bash(head:*)"
     ]
   },
   "hooks": {

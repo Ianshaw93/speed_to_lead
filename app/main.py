@@ -2498,19 +2498,25 @@ async def admin_trigger_gift_leads(
     keywords: str,
     background_tasks: BackgroundTasks,
     icp_label: str | None = None,
+    min_leads: int = 10,
 ) -> dict:
-    """Trigger the gift leads flow for a prospect that has no pipeline run yet.
+    """Trigger the gift leads flow with 3-tier fallback approach.
 
-    Searches DB pool by keywords, creates Google Sheet, posts to Slack.
+    Tier 1: DB pool + strict ICP re-qualification via DeepSeek.
+    Tier 2: Full 12-step gift leads pipeline (background, ~5-15 min).
+    Tier 3: Lead finder / Sales Nav search (background).
 
     Query params:
         prospect_name: Prospect name (fuzzy matched against conversations).
         keywords: Comma-separated keywords to search by.
         icp_label: Short ICP description for the draft DM (e.g. "B2B tech founders").
                    Used as "<icp_label> showing high intent signals" in the message.
+        min_leads: Minimum qualified leads before triggering fallback (default 10).
     """
     from sqlalchemy import or_
 
+    from app.services.gift_pipeline.cost_tracker import CostTracker
+    from app.services.gift_pipeline.deepseek_calls import check_icp_match
     from app.services.google_sheets import get_google_sheets_service
     from app.services.slack import get_slack_bot
 
@@ -2539,7 +2545,7 @@ async def admin_trigger_gift_leads(
         )
         prospect = prospect_result.scalar_one_or_none()
 
-        # Search DB pool with keywords
+        # Tier 1: Over-fetch from DB pool, then ICP re-qualify
         conditions = []
         for kw in keyword_list:
             conditions.append(Prospect.job_title.ilike(f"%{kw}%"))
@@ -2552,7 +2558,7 @@ async def admin_trigger_gift_leads(
                 Prospect.activity_score.isnot(None),
             )
             .order_by(Prospect.activity_score.desc().nullslast())
-            .limit(15)
+            .limit(30)
         )
         leads_list = leads_result.scalars().all()
 
@@ -2576,29 +2582,235 @@ async def admin_trigger_gift_leads(
         for p in leads_list
     ]
 
-    if not leads:
+    # ICP re-qualification: filter leads through DeepSeek
+    icp_criteria = icp_label or ", ".join(keyword_list)
+    if leads:
+        cost_tracker = CostTracker()
+        qualified_leads = []
+        for lead in leads:
+            try:
+                icp_result = await check_icp_match(lead, cost_tracker, icp_criteria)
+                if icp_result.get("match", True):
+                    qualified_leads.append(lead)
+            except Exception as e:
+                logger.warning(f"ICP re-qualification error for {lead.get('full_name')}: {e}")
+                qualified_leads.append(lead)  # Keep on error
+        before_count = len(leads)
+        leads = qualified_leads[:15]
+        logger.info(
+            f"ICP re-qualification: {before_count} → {len(leads)} leads "
+            f"(ICP: {icp_criteria[:60]})"
+        )
+
+    # Check if Tier 1 has enough leads
+    prospect_id = prospect.id if prospect else None
+    linkedin_url = conv.linkedin_profile_url
+
+    if len(leads) >= min_leads:
+        # Tier 1 success: create sheet and post to Slack
+        sheet_url = None
+        sheets_svc = get_google_sheets_service()
+        if sheets_svc:
+            try:
+                sheet_url = sheets_svc.create_gift_leads_sheet(
+                    prospect_name=conv.lead_name,
+                    leads=leads,
+                )
+            except Exception as e:
+                logger.error(f"Failed to create Google Sheet: {e}", exc_info=True)
+
+        icp_text = icp_label or ", ".join(keyword_list)
+        if sheet_url:
+            draft_dm = (
+                f"{icp_text} showing high intent signals\n\n"
+                f"{sheet_url}\n\n"
+                f"Will be valuable for you\n\n"
+                f"Oh yeah I included the LinkedIn profile links in the spreadsheet. "
+                f"Rather than emails etc. Is LI your main way to reach out to "
+                f"potential clients? Or more through warm network/word of mouth"
+            )
+        else:
+            draft_dm = (
+                f"{icp_text} showing high intent signals\n\n"
+                f"Will be valuable for you - let me know if you'd like the list!"
+            )
+
+        slack_bot = get_slack_bot()
+        await slack_bot.send_gift_leads_ready(
+            prospect_id=prospect_id,
+            prospect_name=conv.lead_name,
+            lead_count=len(leads),
+            icp=", ".join(keyword_list),
+            context="DB pool keyword search + ICP re-qualification",
+            draft_dm=draft_dm,
+            sheet_url=sheet_url,
+            conversation_id=conv.id if not prospect_id else None,
+        )
+
         return {
             "prospect": conv.lead_name,
-            "leads_found": 0,
+            "leads_found": len(leads),
             "pool_size": pool_size,
             "keywords": keyword_list,
-            "message": "No matching leads in DB pool. Need to run full pipeline.",
+            "sheet_url": sheet_url,
+            "posted_to_slack": True,
+            "tier": 1,
         }
 
-    # Create Google Sheet
+    # Tier 2/3: Not enough qualified leads — run fallback in background
+    tier1_leads = leads  # Partial results to combine later
+
+    background_tasks.add_task(
+        _admin_gift_leads_fallback,
+        conv_lead_name=conv.lead_name,
+        conv_id=conv.id,
+        prospect_id=prospect_id,
+        linkedin_url=linkedin_url,
+        keyword_list=keyword_list,
+        icp_label=icp_label,
+        tier1_leads=tier1_leads,
+        min_leads=min_leads,
+    )
+
+    tier1_count = len(tier1_leads)
+    return {
+        "prospect": conv.lead_name,
+        "leads_found": tier1_count,
+        "pool_size": pool_size,
+        "keywords": keyword_list,
+        "tier": 2,
+        "message": (
+            f"Only {tier1_count} qualified leads from DB (need {min_leads}). "
+            f"Pipeline fallback running in background (~5-15 min)."
+        ),
+    }
+
+
+async def _admin_gift_leads_fallback(
+    conv_lead_name: str,
+    conv_id: uuid.UUID,
+    prospect_id: uuid.UUID | None,
+    linkedin_url: str | None,
+    keyword_list: list[str],
+    icp_label: str | None,
+    tier1_leads: list[dict],
+    min_leads: int,
+) -> None:
+    """Background task: Tier 2 (pipeline) / Tier 3 (lead finder) fallback.
+
+    Combines any Tier 1 leads with pipeline/lead-finder leads, deduplicates,
+    creates a Google Sheet, and posts to Slack.
+    """
+    from app.services.google_sheets import get_google_sheets_service
+    from app.services.slack import get_slack_bot
+
+    slack_bot = get_slack_bot()
+    icp_text = icp_label or ", ".join(keyword_list)
+
+    # Tier 2: Full pipeline (requires LinkedIn URL)
+    pipeline_leads: list[dict] = []
+    if linkedin_url:
+        thread_ts = await slack_bot.send_confirmation(
+            f"Only {len(tier1_leads)} ICP-qualified DB leads for *{conv_lead_name}*.\n"
+            f"Starting full research pipeline (~5-15 min, ~$1.50)..."
+        )
+
+        async def post_progress(text: str) -> None:
+            try:
+                await slack_bot.send_pipeline_progress(text, thread_ts)
+            except Exception as e:
+                logger.error(f"Failed to post pipeline progress: {e}")
+
+        try:
+            from app.services.gift_pipeline import run_gift_leads_pipeline_async
+
+            pipeline_result = await run_gift_leads_pipeline_async(
+                prospect_url=linkedin_url,
+                prospect_name=conv_lead_name,
+                progress=post_progress,
+                user_icp=icp_label,
+            )
+            pipeline_leads = pipeline_result.get("leads", [])
+            if pipeline_leads:
+                await post_progress(
+                    f"Pipeline found {len(pipeline_leads)} leads."
+                )
+        except Exception as e:
+            logger.error(f"Pipeline fallback error: {e}", exc_info=True)
+            await post_progress(f"Pipeline error: {e}")
+
+    # Tier 3: Lead finder (last resort) — if still short
+    all_leads = _dedup_leads(tier1_leads + _normalize_pipeline_leads(pipeline_leads))
+    if len(all_leads) < min_leads and not pipeline_leads:
+        try:
+            await slack_bot.send_confirmation(
+                f"Pipeline returned 0 leads. Trying Sales Nav search..."
+            )
+            from app.services.lead_finder_pipeline import find_leads_apify
+
+            # Derive job titles from keywords/icp_label
+            job_titles = keyword_list[:3] if keyword_list else [icp_text]
+            apify_leads = await find_leads_apify(
+                job_titles=job_titles,
+                company_keywords=keyword_list[:3],
+                location="united kingdom",
+                fetch_count=20,
+                require_email=False,
+            )
+
+            # ICP qualify the Apify results
+            if apify_leads:
+                from app.services.gift_pipeline.cost_tracker import CostTracker
+                from app.services.gift_pipeline.deepseek_calls import check_icp_match
+
+                cost_tracker = CostTracker()
+                qualified = []
+                for lead in apify_leads:
+                    # Normalize to our format
+                    normalized = {
+                        "full_name": lead.get("fullName", ""),
+                        "job_title": lead.get("jobTitle", ""),
+                        "company_name": lead.get("companyName", ""),
+                        "location": lead.get("addressWithCountry", ""),
+                        "headline": lead.get("headline", ""),
+                        "activity_score": 0,
+                        "linkedin_url": lead.get("linkedinUrl", ""),
+                    }
+                    try:
+                        icp_result = await check_icp_match(
+                            normalized, cost_tracker, icp_text
+                        )
+                        if icp_result.get("match", True):
+                            qualified.append(normalized)
+                    except Exception:
+                        qualified.append(normalized)
+                all_leads = _dedup_leads(all_leads + qualified)
+
+        except Exception as e:
+            logger.error(f"Lead finder fallback error: {e}", exc_info=True)
+            await slack_bot.send_confirmation(f"Lead finder error: {e}")
+
+    all_leads = all_leads[:15]
+
+    if not all_leads:
+        await slack_bot.send_confirmation(
+            f"All tiers exhausted for *{conv_lead_name}*. "
+            f"0 qualified leads found."
+        )
+        return
+
+    # Create Google Sheet and post to Slack
     sheet_url = None
     sheets_svc = get_google_sheets_service()
     if sheets_svc:
         try:
             sheet_url = sheets_svc.create_gift_leads_sheet(
-                prospect_name=conv.lead_name,
-                leads=leads,
+                prospect_name=conv_lead_name,
+                leads=all_leads,
             )
         except Exception as e:
             logger.error(f"Failed to create Google Sheet: {e}", exc_info=True)
 
-    # Compose draft DM
-    icp_text = icp_label or ", ".join(keyword_list)
     if sheet_url:
         draft_dm = (
             f"{icp_text} showing high intent signals\n\n"
@@ -2614,28 +2826,46 @@ async def admin_trigger_gift_leads(
             f"Will be valuable for you - let me know if you'd like the list!"
         )
 
-    # Post to Slack with Send/Edit buttons
-    slack_bot = get_slack_bot()
-    prospect_id = prospect.id if prospect else None
     await slack_bot.send_gift_leads_ready(
         prospect_id=prospect_id,
-        prospect_name=conv.lead_name,
-        lead_count=len(leads),
+        prospect_name=conv_lead_name,
+        lead_count=len(all_leads),
         icp=", ".join(keyword_list),
-        context="DB pool keyword search",
+        context="Tiered fallback (pipeline + lead finder)",
         draft_dm=draft_dm,
         sheet_url=sheet_url,
-        conversation_id=conv.id if not prospect_id else None,
+        conversation_id=conv_id if not prospect_id else None,
     )
 
-    return {
-        "prospect": conv.lead_name,
-        "leads_found": len(leads),
-        "pool_size": pool_size,
-        "keywords": keyword_list,
-        "sheet_url": sheet_url,
-        "posted_to_slack": True,
-    }
+
+def _normalize_pipeline_leads(pipeline_leads: list[dict]) -> list[dict]:
+    """Normalize pipeline lead format to match DB pool format."""
+    normalized = []
+    for lead in pipeline_leads:
+        normalized.append({
+            "full_name": lead.get("full_name") or lead.get("fullName", ""),
+            "job_title": lead.get("job_title") or lead.get("jobTitle", ""),
+            "company_name": lead.get("company_name") or lead.get("companyName", ""),
+            "location": lead.get("location") or lead.get("addressWithCountry", ""),
+            "headline": lead.get("headline", ""),
+            "activity_score": lead.get("activity_score", 0),
+            "linkedin_url": lead.get("linkedin_url") or lead.get("linkedinUrl", ""),
+        })
+    return normalized
+
+
+def _dedup_leads(leads: list[dict]) -> list[dict]:
+    """Deduplicate leads by linkedin_url, keeping first occurrence."""
+    seen_urls: set[str] = set()
+    unique: list[dict] = []
+    for lead in leads:
+        url = (lead.get("linkedin_url") or "").rstrip("/").lower()
+        if url and url in seen_urls:
+            continue
+        if url:
+            seen_urls.add(url)
+        unique.append(lead)
+    return unique
 
 
 @app.get("/buying-signal/log")

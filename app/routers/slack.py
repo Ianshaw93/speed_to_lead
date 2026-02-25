@@ -1827,18 +1827,20 @@ async def _process_gift_leads_with_send(
                 keywords=keywords,
             )
         else:
-            first_name = prospect_name.split()[0] if prospect_name else "there"
+            icp_text = icp_description or ", ".join(keywords)
             if sheet_url:
                 draft_dm = (
-                    f"Hey {first_name}, I pulled together some people in your space "
-                    f"that might be worth connecting with:\n\n"
+                    f"{icp_text} showing high intent signals\n\n"
                     f"{sheet_url}\n\n"
-                    f"Let me know if any of these are useful!"
+                    f"Will be valuable for you\n\n"
+                    f"Oh yeah I included the LinkedIn profile links in the spreadsheet. "
+                    f"Rather than emails etc. Is LI your main way to reach out to "
+                    f"potential clients? Or more through warm network/word of mouth"
                 )
             else:
                 draft_dm = (
-                    f"Hey {first_name}, I pulled together {len(leads)} people in your space "
-                    f"that might be worth connecting with. Let me know if you'd like the list!"
+                    f"{icp_text} showing high intent signals\n\n"
+                    f"Will be valuable for you - let me know if you'd like the list!"
                 )
 
             await slack_bot.send_gift_leads_ready(
