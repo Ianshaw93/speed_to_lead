@@ -2766,7 +2766,7 @@ async def _admin_gift_leads_fallback(
 
     # Tier 3: Lead finder (last resort) — if still short
     all_leads = _dedup_leads(tier1_leads + _normalize_pipeline_leads(pipeline_leads))
-    if len(all_leads) < min_leads and not pipeline_leads:
+    if len(all_leads) < min_leads:
         try:
             await slack_bot.send_confirmation(
                 f"Pipeline returned 0 leads. Trying Sales Nav search..."
