@@ -50,6 +50,13 @@ class Settings(BaseSettings):
     google_oauth_client_secret: str = ""  # OAuth client secret
     google_oauth_refresh_token: str = ""  # OAuth refresh token (personal account)
 
+    # MinIO / Obsidian
+    minio_endpoint: str = ""
+    minio_access_key: str = ""
+    minio_secret_key: str = ""
+    minio_bucket: str = "obsidian-vault"
+    obsidian_vault_path: str = ""
+
     # App
     secret_key: str = "change-me-in-production"
     environment: str = "development"
