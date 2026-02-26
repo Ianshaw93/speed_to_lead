@@ -383,16 +383,29 @@ async def qualify_leads_with_deepseek(
     """Qualify leads using DeepSeek. Returns only those that match ICP."""
     qualified = []
     for lead in leads:
-        icp_result = await check_icp_match(lead, cost_tracker, icp_criteria)
+        name = lead.get("fullName") or lead.get("full_name", "Unknown")
+        icp_result = await check_icp_match(
+            lead, cost_tracker, icp_criteria, strict=True,
+        )
 
-        lead["icp_match"] = icp_result.get("match", True)
+        is_match = icp_result.get("match", False)
+        lead["icp_match"] = is_match
         lead["icp_confidence"] = icp_result.get("confidence", "unknown")
         lead["icp_reason"] = icp_result.get("reason", "")
 
-        if icp_result.get("match", True):
+        logger.info(
+            f"ICP check [{name}]: match={is_match}, "
+            f"confidence={icp_result.get('confidence', '?')}, "
+            f"reason={icp_result.get('reason', 'none')}"
+        )
+
+        if is_match:
             qualified.append(lead)
 
-    logger.info(f"ICP qualification: {len(leads)} → {len(qualified)} leads")
+    logger.info(
+        f"ICP qualification: {len(leads)} → {len(qualified)} leads "
+        f"(rejected {len(leads) - len(qualified)})"
+    )
     return qualified
 
 

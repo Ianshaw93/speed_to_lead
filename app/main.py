@@ -2587,22 +2587,45 @@ async def admin_trigger_gift_leads(
     if leads:
         cost_tracker = CostTracker()
         qualified_leads = []
+        rejected_leads = []
+        error_leads = []
         for lead in leads:
+            name = lead.get("full_name", "Unknown")
             try:
                 icp_result = await check_icp_match(
                     lead, cost_tracker, icp_criteria, strict=True,
                 )
-                if icp_result.get("match", True):
+                lead["icp_reason"] = icp_result.get("reason", "")
+                lead["icp_confidence"] = icp_result.get("confidence", "")
+                is_match = icp_result.get("match", False)
+                logger.info(
+                    f"ICP check [{name}]: match={is_match}, "
+                    f"confidence={icp_result.get('confidence', '?')}, "
+                    f"reason={icp_result.get('reason', 'none')}"
+                )
+                if is_match:
                     qualified_leads.append(lead)
+                else:
+                    rejected_leads.append(name)
             except Exception as e:
-                logger.warning(f"ICP re-qualification error for {lead.get('full_name')}: {e}")
-                qualified_leads.append(lead)  # Keep on error
+                logger.error(
+                    f"ICP re-qualification FAILED for {name}: {e}",
+                    exc_info=True,
+                )
+                lead["icp_reason"] = f"Error: {e}"
+                error_leads.append(name)
+                # Don't keep leads that failed ICP check — we can't trust them
         before_count = len(leads)
         leads = qualified_leads[:15]
         logger.info(
             f"ICP re-qualification: {before_count} → {len(leads)} leads "
-            f"(ICP: {icp_criteria[:60]})"
+            f"(ICP: {icp_criteria[:60]}) | "
+            f"rejected={len(rejected_leads)}, errors={len(error_leads)}"
         )
+        if rejected_leads:
+            logger.info(f"ICP rejected: {', '.join(rejected_leads[:10])}")
+        if error_leads:
+            logger.error(f"ICP errors: {', '.join(error_leads)}")
 
     # Check if Tier 1 has enough leads
     prospect_id = prospect.id if prospect else None
