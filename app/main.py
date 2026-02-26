@@ -2769,14 +2769,15 @@ async def _admin_gift_leads_fallback(
     if len(all_leads) < min_leads:
         try:
             await slack_bot.send_confirmation(
-                f"Pipeline returned 0 leads. Trying Sales Nav search..."
+                f"Only {len(all_leads)} qualified leads so far (need {min_leads}). "
+                f"Trying Sales Nav search..."
             )
             from app.services.lead_finder_pipeline import find_leads_apify
 
-            # Derive job titles from keywords/icp_label
-            job_titles = keyword_list[:3] if keyword_list else [icp_text]
+            # Decision-maker titles; keywords describe the company/industry
+            from app.services.lead_finder_pipeline import DEFAULT_JOB_TITLES
             apify_leads = await find_leads_apify(
-                job_titles=job_titles,
+                job_titles=DEFAULT_JOB_TITLES,
                 company_keywords=keyword_list[:3],
                 location="united kingdom",
                 fetch_count=20,
