@@ -2784,8 +2784,23 @@ async def _admin_gift_leads_fallback(
                 require_email=False,
             )
 
-            # ICP qualify the Apify results
+            # Store ALL Apify leads to DB pool BEFORE ICP filtering
             if apify_leads:
+                from app.database import async_session_factory
+                from app.services.prospect_pipeline import create_prospect_records
+
+                async with async_session_factory() as session:
+                    stored = await create_prospect_records(
+                        apify_leads,
+                        ProspectSource.SALES_NAV,
+                        f"gift_leads|{','.join(keyword_list[:3])}",
+                        None,
+                        session,
+                    )
+                    await session.commit()
+                    logger.info(f"Tier 3: stored {stored} Apify leads to DB pool")
+
+                # ICP qualify the Apify results
                 from app.services.gift_pipeline.cost_tracker import CostTracker
                 from app.services.gift_pipeline.deepseek_calls import check_icp_match
 

@@ -295,8 +295,18 @@ async def run_lead_finder_pipeline(
                 await session.commit()
                 return {"run_id": str(run_id), "status": "completed", "leads_found": 0}
 
-            # Step 2: DB dedup
-            logger.info(f"[2/5] DB dedup...")
+            # Step 2: Store ALL leads to DB pool BEFORE dedup/ICP filtering
+            logger.info(f"[2/5] Storing {len(leads)} leads to DB pool...")
+            pool_stored = await create_prospect_records(
+                leads, ProspectSource.SALES_NAV,
+                f"{','.join(job_titles)}|{','.join(company_keywords)}",
+                None,  # no heyreach list yet
+                session,
+            )
+            await session.commit()
+            logger.info(f"Stored {pool_stored} new leads to DB pool")
+
+            # DB dedup (filter out already-processed leads)
             lead_urls = [l["linkedinUrl"] for l in leads]
             new_urls = await filter_already_processed(lead_urls, session)
             new_url_set = set(new_urls)
@@ -306,7 +316,7 @@ async def run_lead_finder_pipeline(
                 pipeline_run.status = "completed"
                 pipeline_run.completed_at = datetime.now(timezone.utc)
                 await session.commit()
-                return {"run_id": str(run_id), "status": "completed", "new_leads": 0}
+                return {"run_id": str(run_id), "status": "completed", "new_leads": 0, "pool_stored": pool_stored}
 
             # Step 3: ICP qualification
             logger.info(f"[3/5] ICP qualifying {len(leads)} leads...")
@@ -341,7 +351,7 @@ async def run_lead_finder_pipeline(
 
             pipeline_run.final_leads = uploaded + surplus_uploaded
 
-            # Create Prospect records for ALL qualified leads (personalized + surplus)
+            # Update Prospect records with ICP + personalization data
             all_qualified = qualified  # includes both personalized and surplus
             created = await create_prospect_records(
                 all_qualified, ProspectSource.SALES_NAV,
