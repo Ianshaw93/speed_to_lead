@@ -60,7 +60,7 @@ class TestMessageFormatting:
         draft_id = uuid.uuid4()
         actions = build_action_buttons(draft_id)
 
-        assert len(actions) == 2  # Two action blocks
+        assert len(actions) == 1  # Single consolidated actions block
 
         # Flatten all elements
         all_elements = []

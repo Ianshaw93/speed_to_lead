@@ -251,6 +251,7 @@ def build_classification_buttons(
     return [
         {
             "type": "actions",
+            "block_id": "classification_actions",
             "elements": elements,
         }
     ]
@@ -306,6 +307,9 @@ def build_qa_annotation(
 def build_action_buttons(draft_id: uuid.UUID) -> list[dict[str, Any]]:
     """Build action buttons for the draft message.
 
+    Combines primary actions (Send, Edit, Regenerate, Skip) and snooze options
+    into a single actions block for reliable rendering on Slack mobile.
+
     Args:
         draft_id: The draft ID to include in action values.
 
@@ -315,6 +319,7 @@ def build_action_buttons(draft_id: uuid.UUID) -> list[dict[str, Any]]:
     return [
         {
             "type": "actions",
+            "block_id": "draft_actions",
             "elements": [
                 {
                     "type": "button",
@@ -341,12 +346,7 @@ def build_action_buttons(draft_id: uuid.UUID) -> list[dict[str, Any]]:
                     "style": "danger",
                     "action_id": "reject",
                     "value": str(draft_id)
-                }
-            ]
-        },
-        {
-            "type": "actions",
-            "elements": [
+                },
                 {
                     "type": "button",
                     "text": {"type": "plain_text", "text": "⏰ Snooze 1h", "emoji": True},
@@ -1141,10 +1141,10 @@ class SlackBot:
             if qa_score is not None:
                 blocks.extend(build_qa_annotation(qa_score, qa_verdict, qa_issues))
 
-            # Add classification buttons (above action buttons)
-            blocks.extend(build_classification_buttons(draft_id, is_first_reply, prospect_id))
-            # Add action buttons (Send, Edit, etc.)
+            # Add action buttons first (Send, Edit, etc.) - most important for the user
             blocks.extend(build_action_buttons(draft_id))
+            # Add classification buttons below (funnel stage tracking)
+            blocks.extend(build_classification_buttons(draft_id, is_first_reply, prospect_id))
 
             response = await self._client.chat_postMessage(
                 channel=self._channel_id,
